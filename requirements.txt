@@ -1,0 +1,3 @@
+PySide6==6.10.0
+//pip install psutil GPUtil//
+//pip install wmi py-cpuinfo//

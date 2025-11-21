@@ -1,27 +1,25 @@
 # ui/ai_console_page.py
 """
-Optimized AI Console with tool integration.
-Key optimizations:
-- Lazy widget creation
-- Efficient message rendering  
-- Fast keyword matching before AI inference
-- Reduced timer overhead
-- Better memory management
+AI Console with thread-safe model switching.
+Uses Qt signals for all cross-thread communication.
 """
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QTextEdit, QPushButton,
-    QHBoxLayout, QFrame, QLineEdit, QComboBox, QScrollArea, 
-    QProgressBar, QSizePolicy, QScroller
+    QHBoxLayout, QFrame, QLineEdit, QComboBox, QProgressBar
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, Slot, QMetaObject, Q_ARG
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, Slot
 from PySide6.QtGui import QTextCursor
 import os
 import json
-import threading
 
-# Import coordinator
-from ai.ai_tool_coordinator import AIToolCoordinator, OptimizedAIWorker
+# Try to import coordinator
+try:
+    from ai.ai_tool_coordinator import AIToolCoordinator
+    HAS_COORDINATOR = True
+except ImportError:
+    HAS_COORDINATOR = False
+    AIToolCoordinator = None
 
 
 class AIWorker(QThread):
@@ -43,63 +41,90 @@ class AIWorker(QThread):
     def run(self):
         if self._stopped:
             return
-            
-        # Check for tool commands first (fast, no AI needed)
-        if self.coordinator:
-            tool_response, tool_match = self.coordinator.process_message(self.prompt)
-            if tool_response:
-                self.response_ready.emit(tool_response)
-                return
         
-        # No tool match - run AI inference
+        # Safety checks
+        if not self.ai:
+            self.response_ready.emit("⚠️ AI backend not connected.")
+            return
+        if getattr(self.ai, 'is_loading', False):
+            self.response_ready.emit("⚠️ Model is loading. Please wait...")
+            return
+        if not getattr(self.ai, 'is_loaded', False):
+            self.response_ready.emit("⚠️ Model is not ready.")
+            return
+            
+        # Check for tool commands first
+        if self.coordinator and not self._stopped:
+            try:
+                tool_response, _ = self.coordinator.process_message(self.prompt)
+                if tool_response:
+                    self.response_ready.emit(tool_response)
+                    return
+            except:
+                pass
+        
+        # AI generation
         if self._stopped:
             return
-        result = self.ai.generate(
-            self.prompt, 
-            max_new_tokens=self.max_new_tokens, 
-            temperature=self.temperature
-        )
-        if not self._stopped:
-            self.response_ready.emit(result)
+        
+        try:
+            result = self.ai.generate(
+                self.prompt, 
+                max_new_tokens=self.max_new_tokens, 
+                temperature=self.temperature
+            )
+            if not self._stopped:
+                self.response_ready.emit(result)
+        except Exception as e:
+            if not self._stopped:
+                self.response_ready.emit(f"❌ Error: {e}")
 
 
 class AIConsolePage(QWidget):
-    # Signal to trigger tools from coordinator
+    # Signals for thread-safe UI updates from AI callbacks
     trigger_tool = Signal(str)
+    _sig_progress = Signal(int)
+    _sig_status = Signal(str)
+    _sig_loaded = Signal()
+    _sig_benchmark = Signal(float)
+    _sig_vram = Signal(float, float)
     
     def __init__(self, ai=None, clean_tune_page=None):
         super().__init__()
         self.ai = ai
         self.clean_tune_page = clean_tune_page
         self.current_worker = None
+        self.vram_timer = None
+        
+        # Settings
         self.settings_path = os.path.join(os.path.expanduser("~"), ".sara_settings.json")
         self.settings = self._load_settings()
         
-        # Create tool coordinator
-        self.coordinator = AIToolCoordinator(ai=ai, clean_tune_page=clean_tune_page)
-        self.coordinator.tool_requested.connect(self._on_tool_requested)
+        # Coordinator
+        self.coordinator = None
+        if HAS_COORDINATOR and AIToolCoordinator:
+            try:
+                self.coordinator = AIToolCoordinator(ai=ai, clean_tune_page=clean_tune_page)
+                self.coordinator.tool_requested.connect(self._on_tool_requested)
+            except:
+                pass
         
-        # Message buffer for efficient rendering
-        self._message_widgets = []
-        self._max_messages = 100  # Limit for memory management
-        
+        # Build UI
         self._init_ui()
-        self._wire_ai_callbacks()
         
-        # Auto-start load if needed (delayed to not block UI)
-        if self.ai and not self.ai.is_loaded and not self.ai.is_loading:
-            QTimer.singleShot(100, self.ai.start_load)
+        # Wire callbacks after a short delay
+        QTimer.singleShot(100, self._wire_ai_callbacks)
 
     def set_clean_tune_page(self, page):
-        """Set the CleanTunePage reference for tool execution."""
         self.clean_tune_page = page
-        self.coordinator.set_clean_tune_page(page)
+        if self.coordinator:
+            self.coordinator.set_clean_tune_page(page)
 
     def _load_settings(self):
         try:
             with open(self.settings_path, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
+        except:
             return {}
 
     def _init_ui(self):
@@ -107,46 +132,47 @@ class AIConsolePage(QWidget):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(12)
 
-        # Header row
+        # Header
         header = QHBoxLayout()
-        title = QLabel("🤖 AI Console (Local)")
+        title = QLabel("🤖 AI Console")
         title.setObjectName("title")
         header.addWidget(title)
         header.addStretch()
 
         # Model selector
         self.model_selector = QComboBox()
-        if self.ai:
+        if self.ai and hasattr(self.ai, 'MODELS'):
             keys = list(self.ai.MODELS.keys())
             self.model_selector.addItems(keys)
-            idx = keys.index(self.ai.model_key) if self.ai.model_key in keys else 0
-            self.model_selector.setCurrentIndex(idx)
+            current = getattr(self.ai, 'model_key', keys[0] if keys else '')
+            if current in keys:
+                self.model_selector.setCurrentIndex(keys.index(current))
             self.model_selector.currentTextChanged.connect(self._on_model_change)
         header.addWidget(QLabel("Model:"))
         header.addWidget(self.model_selector)
 
-        self.status_label = QLabel("● Ready" if self.ai and self.ai.is_loaded else "● Not Loaded")
+        self.status_label = QLabel("● Not Loaded")
         self.status_label.setStyleSheet("color:#FFA726; font-weight:600;")
         header.addWidget(self.status_label)
         layout.addLayout(header)
 
-        # Info row (VRAM / benchmark) - simplified
+        # Info row
         info_row = QHBoxLayout()
-        self.vram_label = QLabel("VRAM: - / -")
-        self.benchmark_label = QLabel("Speed: - t/s")
+        self.vram_label = QLabel("VRAM: -")
+        self.benchmark_label = QLabel("Speed: -")
         info_row.addWidget(self.vram_label)
         info_row.addStretch()
         info_row.addWidget(self.benchmark_label)
         layout.addLayout(info_row)
 
-        # Progress bar (hidden by default)
+        # Progress
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.hide()
         layout.addWidget(self.progress)
 
-        # Console area - use QTextEdit for better performance
+        # Console
         self.console = QTextEdit()
         self.console.setReadOnly(True)
         self.console.setStyleSheet("""
@@ -155,57 +181,21 @@ class AIConsolePage(QWidget):
                 border: 1px solid #2b3548;
                 border-radius: 10px;
                 padding: 12px;
-                font-family: 'Segoe UI', sans-serif;
-                font-size: 14px;
+                color: #e8eef6;
             }
         """)
-        # Enable kinetic scrolling for smoother experience
-        QScroller.grabGesture(self.console.viewport(), QScroller.LeftMouseButtonGesture)
         layout.addWidget(self.console, 1)
 
         # Input row
         input_row = QHBoxLayout()
         self.input = QLineEdit()
-        self.input.setPlaceholderText("Ask SARA to run scans, cleanup, or ask about your system...")
-        self.input.setStyleSheet("""
-            QLineEdit {
-                background: #0f1522;
-                border: 1px solid #2b3548;
-                border-radius: 8px;
-                padding: 10px 14px;
-                font-size: 14px;
-            }
-            QLineEdit:focus { border-color: #6e8bff; }
-        """)
+        self.input.setPlaceholderText("Ask SARA...")
         self.input.returnPressed.connect(self.send_message)
         
         self.send_btn = QPushButton("Send")
-        self.send_btn.setStyleSheet("""
-            QPushButton {
-                background: #6e8bff;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                padding: 10px 20px;
-                font-weight: 600;
-            }
-            QPushButton:hover { background: #869eff; }
-            QPushButton:disabled { background: #3d4a6b; }
-        """)
         self.send_btn.clicked.connect(self.send_message)
         
         self.stop_btn = QPushButton("Stop")
-        self.stop_btn.setStyleSheet("""
-            QPushButton {
-                background: #ff6e6e;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                padding: 10px 16px;
-                font-weight: 600;
-            }
-            QPushButton:hover { background: #ff8a8a; }
-        """)
         self.stop_btn.clicked.connect(self.stop_generation)
         self.stop_btn.setEnabled(False)
         
@@ -214,211 +204,217 @@ class AIConsolePage(QWidget):
         input_row.addWidget(self.stop_btn, 1)
         layout.addLayout(input_row)
 
-        # Quick action buttons
+        # Quick actions
         quick_row = QHBoxLayout()
-        quick_label = QLabel("Quick actions:")
-        quick_label.setStyleSheet("color: #9eb3ff; font-size: 12px;")
-        quick_row.addWidget(quick_label)
-        
-        quick_actions = [
-            ("🔍 Run SFC", "run system file checker"),
-            ("🛠️ DISM Repair", "run dism repair"),
-            ("🧹 Cleanup", "cleanup temp files"),
-            ("🛡️ Virus Scan", "scan for viruses"),
-        ]
-        for label, cmd in quick_actions:
+        quick_row.addWidget(QLabel("Quick:"))
+        for label, cmd in [("SFC", "run sfc"), ("DISM", "run dism"), ("Cleanup", "cleanup")]:
             btn = QPushButton(label)
-            btn.setStyleSheet("""
-                QPushButton {
-                    background: #1b2230;
-                    color: #cfd7ff;
-                    border: 1px solid #2b3548;
-                    border-radius: 6px;
-                    padding: 6px 12px;
-                    font-size: 12px;
-                }
-                QPushButton:hover { background: #2b3548; border-color: #6e8bff; }
-            """)
-            btn.clicked.connect(lambda _, c=cmd: self._quick_action(c))
+            btn.clicked.connect(lambda c, x=cmd: self._quick_action(x))
             quick_row.addWidget(btn)
         quick_row.addStretch()
         layout.addLayout(quick_row)
 
         self.setLayout(layout)
         
-        # Add welcome message
-        self._append_system_message(
-            "👋 Welcome to SARA AI Console!\n\n"
-            "I can help you with:\n"
-            "• **System repairs** - Run SFC or DISM to fix Windows issues\n"
-            "• **Disk cleanup** - Remove temp files and free space\n"
-            "• **Security scans** - Check files with VirusTotal\n"
-            "• **General questions** - Ask me anything about your system\n\n"
-            "Try the quick action buttons below, or just ask me what you need!"
-        )
+        # Welcome
+        self._append_system("Welcome to SARA AI Console!")
 
     def _wire_ai_callbacks(self):
+        """Connect AI callbacks via signals for thread safety."""
         if not self.ai:
             return
-        self.ai.on_progress = self._on_progress
-        self.ai.on_status = self._set_status
-        self.ai.on_loaded = self._on_model_ready
-        self.ai.on_benchmark = self._on_benchmark
-        self.ai.on_vram = self._on_vram
+        
+        # Connect signals to slots
+        self._sig_progress.connect(self._slot_progress)
+        self._sig_status.connect(self._slot_status)
+        self._sig_loaded.connect(self._slot_loaded)
+        self._sig_benchmark.connect(self._slot_benchmark)
+        self._sig_vram.connect(self._slot_vram)
+        
+        # AI callbacks emit signals (safe from any thread)
+        self.ai.on_progress = lambda v: self._sig_progress.emit(int(v))
+        self.ai.on_status = lambda s: self._sig_status.emit(str(s))
+        self.ai.on_loaded = lambda: self._sig_loaded.emit()
+        self.ai.on_benchmark = lambda t: self._sig_benchmark.emit(float(t))
+        self.ai.on_vram = lambda u, t: self._sig_vram.emit(float(u), float(t))
 
-        # Reduced polling frequency (every 2s instead of 1s)
+        # VRAM timer
         self.vram_timer = QTimer(self)
-        self.vram_timer.setInterval(2000)
         self.vram_timer.timeout.connect(self._poll_vram)
-        self.vram_timer.start()
+        self.vram_timer.start(2000)
+        
+        # Auto-start load
+        if not getattr(self.ai, 'is_loaded', False) and not getattr(self.ai, 'is_loading', False):
+            QTimer.singleShot(200, self.ai.start_load)
 
+    # ---- Thread-safe slots ----
     @Slot(int)
-    def _on_progress(self, v):
-        self.progress.setValue(v)
-        if v > 0 and v < 100:
-            self.progress.show()
-        elif v >= 100:
+    def _slot_progress(self, v):
+        try:
+            self.progress.setValue(v)
+            self.progress.setVisible(0 < v < 100)
+        except:
+            pass
+
+    @Slot(str)
+    def _slot_status(self, s):
+        try:
+            self.status_label.setText(s)
+        except:
+            pass
+
+    @Slot()
+    def _slot_loaded(self):
+        try:
+            self._set_loading_state(False)
+            self.status_label.setText("● Ready")
+            self.status_label.setStyleSheet("color:#4CAF50; font-weight:600;")
             self.progress.hide()
+            model = getattr(self.ai, 'model_key', 'unknown')
+            self._append_system(f"✅ Model {model} ready!")
+        except:
+            pass
+
+    @Slot(float)
+    def _slot_benchmark(self, tps):
+        try:
+            self.benchmark_label.setText(f"Speed: {tps} t/s")
+        except:
+            pass
+
+    @Slot(float, float)
+    def _slot_vram(self, used, total):
+        try:
+            if total > 0:
+                self.vram_label.setText(f"VRAM: {used:.1f}/{total:.1f} GB")
+            else:
+                self.vram_label.setText("VRAM: CPU")
+        except:
+            pass
 
     def _poll_vram(self):
-        if self.ai:
-            used, total = self.ai.get_vram_usage_gb()
-            self._on_vram(used, total)
+        if self.ai and hasattr(self.ai, 'get_vram_usage_gb'):
+            try:
+                u, t = self.ai.get_vram_usage_gb()
+                self._slot_vram(u, t)
+            except:
+                pass
 
-    def _set_status(self, s):
-        self.status_label.setText(s)
+    # ---- Messages ----
+    def _append_user(self, text):
+        self.console.append(f'<p style="color:#6e8bff;"><b>You:</b> {text}</p>')
+        self._scroll_bottom()
 
-    def _on_benchmark(self, tps):
-        self.benchmark_label.setText(f"Speed: {tps} t/s")
+    def _append_ai(self, text):
+        text = str(text).replace("\n", "<br>")
+        self.console.append(f'<p style="color:#e8eef6;"><b>🤖 SARA:</b> {text}</p>')
+        self._scroll_bottom()
 
-    def _on_vram(self, used, total):
-        if total > 0:
-            self.vram_label.setText(f"VRAM: {used:.2f} / {total:.1f} GB")
-        else:
-            self.vram_label.setText("VRAM: CPU mode")
+    def _append_system(self, text):
+        self.console.append(f'<p style="color:#9eb3ff;"><i>{text}</i></p>')
+        self._scroll_bottom()
 
-    def _on_model_ready(self):
-        self.status_label.setText("● Ready")
-        self.status_label.setStyleSheet("color:#4CAF50; font-weight:600;")
-        self.progress.hide()
-        self._append_system_message(f"✅ Model **{self.ai.model_key}** loaded and ready!")
+    def _scroll_bottom(self):
+        try:
+            c = self.console.textCursor()
+            c.movePosition(QTextCursor.End)
+            self.console.setTextCursor(c)
+        except:
+            pass
 
-    # ---- Messaging ----
-    def _append_user_message(self, text):
-        html = f"""
-        <div style="text-align: right; margin: 8px 0;">
-            <span style="background: #6e8bff; color: white; padding: 10px 14px; 
-                        border-radius: 12px; display: inline-block; max-width: 70%;">
-                {text}
-            </span>
-        </div>
-        """
-        self.console.append(html)
-        self._scroll_to_bottom()
-
-    def _append_ai_message(self, text):
-        # Convert markdown-style bold to HTML
-        text = text.replace("**", "<b>", 1)
-        while "**" in text:
-            text = text.replace("**", "</b>", 1).replace("**", "<b>", 1)
-        text = text.replace("\n", "<br>")
-        
-        html = f"""
-        <div style="text-align: left; margin: 8px 0;">
-            <span style="background: #1b2230; border: 1px solid #2b3548; color: #e8eef6; 
-                        padding: 10px 14px; border-radius: 12px; display: inline-block; max-width: 80%;">
-                🤖 {text}
-            </span>
-        </div>
-        """
-        self.console.append(html)
-        self._scroll_to_bottom()
-
-    def _append_system_message(self, text):
-        text = text.replace("**", "<b>", 1)
-        while "**" in text:
-            text = text.replace("**", "</b>", 1).replace("**", "<b>", 1)
-        text = text.replace("\n", "<br>")
-        
-        html = f"""
-        <div style="text-align: center; margin: 12px 0;">
-            <span style="background: #0f1522; border: 1px dashed #2b3548; color: #9eb3ff; 
-                        padding: 10px 16px; border-radius: 8px; display: inline-block; font-size: 13px;">
-                {text}
-            </span>
-        </div>
-        """
-        self.console.append(html)
-        self._scroll_to_bottom()
-
-    def _scroll_to_bottom(self):
-        cursor = self.console.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        self.console.setTextCursor(cursor)
-
-    def _quick_action(self, command):
-        self.input.setText(command)
+    def _quick_action(self, cmd):
+        self.input.setText(cmd)
         self.send_message()
 
+    # ---- Send message ----
     def send_message(self):
         if not self.ai:
-            self._append_ai_message("⚠️ AI backend not connected.")
+            self._append_ai("⚠️ AI not connected.")
             return
-        if not self.ai.is_loaded:
-            self._append_ai_message("⚠️ Model is still loading. Please wait...")
+        if getattr(self.ai, 'is_loading', False):
+            self._append_ai("⚠️ Model loading...")
+            return
+        if not getattr(self.ai, 'is_loaded', False):
+            self._append_ai("⚠️ Model not ready.")
             return
             
         text = self.input.text().strip()
         if not text:
             return
             
-        self._append_user_message(text)
+        self._append_user(text)
         self.input.clear()
-        self.input.setEnabled(False)
-        self.send_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.status_label.setText("● Processing...")
-        self.status_label.setStyleSheet("color:#FFA726; font-weight:600;")
+        self._set_generating(True)
 
-        max_tokens = int(self.settings.get("max_tokens", 256))
+        max_tok = int(self.settings.get("max_tokens", 256))
         temp = float(self.settings.get("temperature", 0.7))
         
-        self.current_worker = AIWorker(
-            self.ai, text, 
-            coordinator=self.coordinator,
-            max_new_tokens=max_tokens, 
-            temperature=temp
-        )
+        self.current_worker = AIWorker(self.ai, text, self.coordinator, max_tok, temp)
         self.current_worker.response_ready.connect(self._on_response)
         self.current_worker.start()
 
+    @Slot(str)
     def _on_response(self, resp):
-        self._append_ai_message(resp)
-        self.input.setEnabled(True)
-        self.send_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
-        self.status_label.setText("● Ready")
-        self.status_label.setStyleSheet("color:#4CAF50; font-weight:600;")
+        self._append_ai(resp)
+        self._set_generating(False)
 
     def stop_generation(self):
         if self.current_worker and self.current_worker.isRunning():
             self.current_worker.stop()
-            self.status_label.setText("● Stopped")
-            self.stop_btn.setEnabled(False)
-            self.send_btn.setEnabled(True)
-            self.input.setEnabled(True)
+        self._set_generating(False)
 
+    def _set_generating(self, active):
+        self.input.setEnabled(not active)
+        self.send_btn.setEnabled(not active)
+        self.stop_btn.setEnabled(active)
+
+    # ---- Model switch ----
     def _on_model_change(self, key):
         if not self.ai:
             return
-        self.progress.show()
-        self.progress.setValue(1)
-        self.ai.switch_model(key)
-        self._append_system_message(f"🔄 Switching to **{key}**...")
+        if getattr(self.ai, 'is_loading', False):
+            self._append_system("⏳ Already loading...")
+            self._reset_selector()
+            return
+        if key == getattr(self.ai, 'model_key', '') and getattr(self.ai, 'is_loaded', False):
+            return
+        
+        self._set_loading_state(True)
+        self._append_system(f"🔄 Switching to {key}...")
+        
+        # Delay the switch to let UI update first
+        QTimer.singleShot(50, lambda: self._do_switch(key))
+
+    def _do_switch(self, key):
+        try:
+            if self.ai:
+                self.ai.switch_model(key)
+        except Exception as e:
+            self._append_system(f"❌ Error: {e}")
+            self._set_loading_state(False)
+
+    def _reset_selector(self):
+        try:
+            if self.ai and hasattr(self.ai, 'model_key'):
+                keys = list(self.ai.MODELS.keys())
+                if self.ai.model_key in keys:
+                    self.model_selector.blockSignals(True)
+                    self.model_selector.setCurrentIndex(keys.index(self.ai.model_key))
+                    self.model_selector.blockSignals(False)
+        except:
+            pass
+
+    def _set_loading_state(self, loading):
+        self.input.setEnabled(not loading)
+        self.send_btn.setEnabled(not loading)
+        self.model_selector.setEnabled(not loading)
+        if loading:
+            self.progress.show()
+            self.progress.setValue(10)
+            self.status_label.setText("● Loading...")
+            self.status_label.setStyleSheet("color:#FFA726; font-weight:600;")
 
     @Slot(str, dict)
-    def _on_tool_requested(self, tool_name: str, options: dict):
-        """Handle tool execution request from coordinator."""
-        if self.clean_tune_page:
-            # Use QMetaObject.invokeMethod for thread-safe UI call
+    def _on_tool_requested(self, tool_name, options):
+        if self.clean_tune_page and hasattr(self.clean_tune_page, '_start_tool'):
             QTimer.singleShot(0, lambda: self.clean_tune_page._start_tool(tool_name))

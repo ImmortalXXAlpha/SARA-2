@@ -1,13 +1,31 @@
 """
 SARA - AI Repair Agent
 Direct Python-based styling (no .qss dependency)
-Recommended and configured by GPT-5 Agent
+Configured for local AI integration
 """
 
 import sys
+import os
+import ctypes
 import traceback
 from PySide6.QtWidgets import QApplication
 from ui.main_window import MainWindow
+
+
+def is_admin():
+    """Check if script has admin privileges."""
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
+
+
+def run_as_admin():
+    """Re-launch this script with admin privileges."""
+    ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", sys.executable, f'"{__file__}"', None, 1
+    )
+    sys.exit(0)
 
 
 # ------------------------------
@@ -43,6 +61,19 @@ QPushButton:pressed {
 QLabel {
     color: #e8eef6;
 }
+
+QLabel#title {
+    font-size: 28px;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+QLabel#subtitle {
+    font-size: 14px;
+    color: #9eb3ff;
+    margin-bottom: 10px;
+}
+
 QGroupBox {
     background: #121826;
     border: 1px solid #2b3548;
@@ -89,11 +120,61 @@ QProgressBar::chunk {
     border-radius: 9px;
     margin: 2px;
 }
+
+QScrollArea {
+    border: none;
+}
+
+QCheckBox {
+    color: #e8eef6;
+    spacing: 8px;
+}
+
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border: 2px solid #2b3548;
+    border-radius: 4px;
+    background: #0f1522;
+}
+
+QCheckBox::indicator:checked {
+    background: #6e8bff;
+    border-color: #6e8bff;
+}
+
+QSpinBox {
+    background: #0f1522;
+    color: #e8eef6;
+    border: 1px solid #2b3548;
+    border-radius: 6px;
+    padding: 4px 8px;
+}
+
+QSlider::groove:horizontal {
+    height: 6px;
+    background: #2b3548;
+    border-radius: 3px;
+}
+
+QSlider::handle:horizontal {
+    background: #6e8bff;
+    width: 16px;
+    height: 16px;
+    margin: -5px 0;
+    border-radius: 8px;
+}
+
+QSlider::handle:horizontal:hover {
+    background: #869eff;
+}
 """
 
 
 def main():
     print("🚀 Starting SARA (AI Repair Agent)...")
+    print(f"🔐 Admin privileges: {is_admin()}")
+    
     try:
         app = QApplication(sys.argv)
         print("🧭 QApplication created")
@@ -113,5 +194,13 @@ def main():
 
 
 if __name__ == "__main__":
+    # Check for admin privileges and request if needed
+    if not is_admin():
+        print("🔐 Requesting admin privileges...")
+        run_as_admin()
+    
+    # Set working directory to script location
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(script_dir)
+    
     sys.exit(main())
-        

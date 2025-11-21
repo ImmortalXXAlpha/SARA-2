@@ -1,217 +1,277 @@
+# ui/main_window.py
+"""
+Optimized MainWindow with lazy page loading and AI-tool integration.
+Key optimizations:
+- Lazy page instantiation (pages created on first access)
+- Reduced stylesheet recalculations
+- Shared AI instance properly wired to tools
+- Efficient signal connections
+"""
+
 from PySide6.QtWidgets import (
     QWidget, QStackedWidget, QVBoxLayout, QPushButton, QHBoxLayout,
-    QFrame, QSpacerItem, QSizePolicy, QComboBox
+    QFrame, QSpacerItem, QSizePolicy, QComboBox, QLabel
 )
-from PySide6.QtGui import QColor, QPalette
-from PySide6.QtCore import Qt
-from ui.dashboard_page import DashboardPage
-from ui.clean_tune_page import CleanTunePage
-from ui.hardware_page import HardwarePage
-from ui.ai_console_page import AIConsolePage
-from ui.reports_page import ReportsPage
-from ui.settings_page import SettingsPage
+from PySide6.QtCore import Qt, QTimer
+from typing import Dict, Optional
+
+# Import NovaAI
+from ai.nova_ai import NovaAI
 
 
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("SARA – AI Repair Agent")
+        self.setWindowTitle("SARA — AI Repair Agent")
         self.resize(1300, 750)
 
-        # 🎨 Accent color options
-        self.accents = {
-            "Blue": "#6e8bff",
-            "Purple": "#9b6eff",
-            "Green": "#4ef57a",
-            "Red": "#ff6e6e"
-        }
+        # Theme settings
+        self.accents = {"Blue": "#6e8bff", "Purple": "#9b6eff", "Green": "#4ef57a", "Red": "#ff6e6e"}
         self.current_accent = self.accents["Blue"]
+        self.current_theme = "dark"
 
-        # Initialize UI
-        self.apply_theme(self.current_accent)
-        self.build_ui()
+        # Create the central NovaAI instance
+        self.ai = NovaAI(model_key="phi3-mini")
 
-    # 💡 Rebuilds style and re-applies with chosen accent
-    def apply_theme(self, accent):
-        palette = self.palette()
-        palette.setColor(QPalette.Window, QColor("#0f1117"))
-        palette.setColor(QPalette.WindowText, QColor("#e8eef6"))
-        self.setPalette(palette)
+        # Lazy page loading - pages dict stores either class or instance
+        self._page_classes: Dict[str, type] = {}
+        self._page_instances: Dict[str, QWidget] = {}
+        self._pages_initialized = False
 
-        self.setStyleSheet(f"""
-            QWidget {{
-                background-color: #0f1117;
-                color: #e8eef6;
-                font-family: 'Segoe UI', sans-serif;
-                font-size: 14px;
-            }}
+        # Build UI
+        self._build_ui()
+        self._apply_theme(self.current_accent, self.current_theme)
 
-            /* Sidebar styling */
-            QFrame#sidebar {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #141922, stop:1 #1e2635);
-                border-right: 1px solid #2b3548;
-            }}
+        # Defer page initialization to after window shows (faster startup)
+        QTimer.singleShot(50, self._initialize_pages)
 
-            QPushButton {{
-                background: #1b2230;
-                color: #e8eef6;
-                border: 1px solid #2b3548;
-                border-radius: 10px;
-                padding: 10px 14px;
-                margin: 8px 14px;
-                text-align: left;
-                font-weight: 600;
-                transition: all 0.2s ease-in-out;
-            }}
-            QPushButton:hover {{
-                background: {accent};
-                border-color: {accent};
-                color: #fff;
-                box-shadow: 0 0 12px {accent};
-            }}
-            QPushButton:pressed {{
-                background: #1a2030;
-                border-color: {accent};
-            }}
-
-            /* Titles & Subtitles */
-            QLabel#title {{
-                font-size: 28px;
-                font-weight: 700;
-                color: #ffffff;
-                text-shadow: 0 0 8px rgba(255,255,255,0.25);
-                margin-bottom: 4px;
-            }}
-
-            QLabel#subtitle {{
-                color: #b4c2e2;
-                font-size: 15px;
-                font-weight: 500;
-                margin-bottom: 12px;
-            }}
-
-            /* Cards and Frames */
-            QFrame {{
-                color: #e8eef6;
-            }}
-
-            /* Progress bars */
-            QProgressBar {{
-                background: #131a28;
-                border: 1px solid #2b3548;
-                border-radius: 8px;
-                text-align: center;
-                color: #e8eef6;
-                min-height: 8px;
-            }}
-            QProgressBar::chunk {{
-                background: {accent};
-                border-radius: 8px;
-            }}
-
-            /* ComboBox */
-            QComboBox {{
-                background: #1b2230;
-                border: 1px solid #2b3548;
-                border-radius: 6px;
-                padding: 6px 10px;
-                color: #e8eef6;
-                font-weight: 500;
-            }}
-            QComboBox::drop-down {{
-                border: none;
-            }}
-            QComboBox QAbstractItemView {{
-                background: #1b2230;
-                border: 1px solid #2b3548;
-                selection-background-color: {accent};
-                selection-color: white;
-            }}
-        """)
-
-    # ⚙️ Builds main window layout
-    def build_ui(self):
-        # Stacked pages
+    def _build_ui(self):
+        """Build the main UI structure."""
         self.stack = QStackedWidget()
-        self.pages = {
-            "Dashboard": DashboardPage(),
-            "Clean Tune": CleanTunePage(),
-            "Hardware": HardwarePage(),
-            "AI Console": AIConsolePage(),
-            "Reports": ReportsPage(),
-            "Settings": SettingsPage()
-        }
-        for page in self.pages.values():
-            page.setStyleSheet(self.styleSheet())
-            self.stack.addWidget(page)
 
-        # Sidebar (with spacing + accent switcher)
+        # Sidebar
         sidebar_frame = QFrame()
         sidebar_frame.setObjectName("sidebar")
+        sidebar_frame.setFixedWidth(220)
         sidebar_layout = QVBoxLayout(sidebar_frame)
         sidebar_layout.setAlignment(Qt.AlignTop)
         sidebar_layout.setContentsMargins(8, 24, 8, 24)
         sidebar_layout.setSpacing(14)
 
-        # Sidebar Buttons
-        self.buttons = {}
-        for name in self.pages.keys():
+        # Logo
+        logo_label = QLabel("🤖 SARA")
+        logo_label.setStyleSheet("font-size:24px; font-weight:bold; color:#fff;")
+        subtitle_label = QLabel("AI Repair Agent")
+        subtitle_label.setStyleSheet("color:#9eb3ff;")
+        logo_container = QFrame()
+        logo_layout = QVBoxLayout(logo_container)
+        logo_layout.setContentsMargins(10, 0, 0, 20)
+        logo_layout.addWidget(logo_label)
+        logo_layout.addWidget(subtitle_label)
+        sidebar_layout.addWidget(logo_container)
+
+        # Navigation buttons
+        self.buttons: Dict[str, QPushButton] = {}
+        nav_items = ["Dashboard", "Clean Tune", "Hardware", "AI Console", "Reports", "Settings"]
+        
+        for name in nav_items:
             btn = QPushButton(name)
-            btn.clicked.connect(lambda _, n=name: self.switch_page(n))
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _, n=name: self._switch_page(n))
             sidebar_layout.addWidget(btn)
             self.buttons[name] = btn
 
-        # Spacer and accent selector
         sidebar_layout.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        
+        # Accent selector
+        accent_label = QLabel("Accent Color")
+        accent_label.setStyleSheet("color:#9eb3ff; font-size:12px;")
+        sidebar_layout.addWidget(accent_label)
+        
         accent_box = QComboBox()
         accent_box.addItems(self.accents.keys())
         accent_box.setCurrentText("Blue")
-        accent_box.currentTextChanged.connect(self.change_accent)
+        accent_box.currentTextChanged.connect(self._change_accent)
         sidebar_layout.addWidget(accent_box)
 
-        # Main layout: sidebar + stacked widget
+        # Main layout
         layout = QHBoxLayout(self)
-        layout.addWidget(sidebar_frame, 1)
-        layout.addWidget(self.stack, 5)
+        layout.addWidget(sidebar_frame)
+        layout.addWidget(self.stack, 1)
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.switch_page("Dashboard")
+    def _initialize_pages(self):
+        """Initialize pages lazily - import and create only when needed."""
+        if self._pages_initialized:
+            return
+            
+        # Import page classes here to speed up initial window display
+        from .dashboard_page import DashboardPage
+        from .clean_tune_page import CleanTunePage
+        from .hardware_page import HardwarePage
+        from .ai_console_page import AIConsolePage
+        from .reports_page import ReportsPage
+        from .settings_page import SettingsPage
 
-    def switch_page(self, name):
-        """Switch active content page and visually highlight sidebar button."""
-        self.stack.setCurrentWidget(self.pages[name])
+        # Store classes for lazy instantiation
+        self._page_classes = {
+            "Dashboard": DashboardPage,
+            "Clean Tune": CleanTunePage,
+            "Hardware": HardwarePage,
+            "AI Console": AIConsolePage,
+            "Reports": ReportsPage,
+            "Settings": SettingsPage,
+        }
+        
+        # Create critical pages immediately
+        self._get_or_create_page("Dashboard")
+        self._get_or_create_page("Clean Tune")  # Needed for AI integration
+        
+        # Wire AI Console to Clean Tune
+        ai_console = self._get_or_create_page("AI Console")
+        clean_tune = self._page_instances.get("Clean Tune")
+        if ai_console and clean_tune:
+            ai_console.set_clean_tune_page(clean_tune)
+        
+        # Wire settings
+        settings = self._get_or_create_page("Settings")
+        if settings:
+            settings.theme_changed.connect(self._handle_theme_change)
+            settings.ai_settings_changed.connect(self._apply_ai_settings)
+
+        self._pages_initialized = True
+        self._switch_page("Dashboard")
+
+    def _get_or_create_page(self, name: str) -> Optional[QWidget]:
+        """Get existing page or create it lazily."""
+        if name in self._page_instances:
+            return self._page_instances[name]
+            
+        if name not in self._page_classes:
+            return None
+            
+        page_class = self._page_classes[name]
+        
+        # Special handling for pages that need AI instance
+        if name == "AI Console":
+            clean_tune = self._page_instances.get("Clean Tune")
+            page = page_class(ai=self.ai, clean_tune_page=clean_tune)
+        elif name == "Settings":
+            page = page_class(ai=self.ai)
+        else:
+            page = page_class()
+            
+        self._page_instances[name] = page
+        self.stack.addWidget(page)
+        return page
+
+    def _switch_page(self, name: str):
+        """Switch to a page, creating it if necessary."""
+        page = self._get_or_create_page(name)
+        if page:
+            self.stack.setCurrentWidget(page)
+            
+        # Update button styles
         accent = self.current_accent
-
-        # Update button highlighting
         for n, btn in self.buttons.items():
             if n == name:
                 btn.setStyleSheet(f"""
-                    background: {accent};
-                    color: white;
-                    border-radius: 10px;
+                    background: {accent}; 
+                    color: white; 
+                    border-radius: 10px; 
                     font-weight: 700;
+                    border: none;
                 """)
             else:
-                btn.setStyleSheet(f"""
-                    background: #1b2230;
-                    color: #e8eef6;
-                    border: 1px solid #2b3548;
-                    border-radius: 10px;
-                    padding: 10px 14px;
-                    text-align: left;
-                    font-weight: 600;
-                """)
+                btn.setStyleSheet("")
 
-    def change_accent(self, accent_name):
-        """Change accent color dynamically."""
-        self.current_accent = self.accents[accent_name]
-        self.apply_theme(self.current_accent)
-        # Re-apply style to all pages
-        for page in self.pages.values():
-            page.setStyleSheet(self.styleSheet())
-        # Keep sidebar highlight consistent
-        current_name = [k for k, v in self.pages.items() if v == self.stack.currentWidget()]
-        if current_name:
-            self.switch_page(current_name[0])
+    def _change_accent(self, accent_name: str):
+        """Change the accent color."""
+        self.current_accent = self.accents.get(accent_name, self.current_accent)
+        self._apply_theme(self.current_accent, self.current_theme)
+
+    def _handle_theme_change(self, theme: str):
+        """Handle theme change from settings."""
+        self.current_theme = theme
+        self._apply_theme(self.current_accent, self.current_theme)
+
+    def _apply_theme(self, accent: str, theme: str):
+        """Apply theme styling efficiently."""
+        if theme == "dark":
+            bg_main, bg_card = "#0f1117", "#1b2230"
+            text_primary, text_secondary = "#e8eef6", "#cfd7ff"
+            border_color = "#2b3548"
+        else:
+            bg_main, bg_card = "#f5f7fa", "#ffffff"
+            text_primary, text_secondary = "#1a1d29", "#4a5568"
+            border_color = "#e2e8f0"
+
+        style = f"""
+            QWidget {{
+                background-color: {bg_main};
+                color: {text_primary};
+                font-family: 'Segoe UI', sans-serif;
+            }}
+            QFrame#sidebar {{
+                background-color: {bg_card};
+                border-right: 1px solid {border_color};
+            }}
+            QLabel#title {{
+                font-size: 28px;
+                font-weight: 700;
+                color: {text_primary};
+            }}
+            QLabel#subtitle {{
+                font-size: 14px;
+                color: {text_secondary};
+            }}
+            QPushButton {{
+                background-color: {bg_card};
+                color: {text_primary};
+                border: 1px solid {border_color};
+                border-radius: 10px;
+                padding: 10px 14px;
+                text-align: left;
+                font-weight: 500;
+            }}
+            QPushButton:hover {{
+                background-color: {accent};
+                border-color: {accent};
+                color: white;
+            }}
+            QComboBox {{
+                background: {bg_card};
+                border: 1px solid {border_color};
+                border-radius: 6px;
+                padding: 6px 10px;
+                color: {text_primary};
+            }}
+            QProgressBar {{
+                background: {border_color};
+                border-radius: 4px;
+            }}
+            QProgressBar::chunk {{
+                background: {accent};
+                border-radius: 4px;
+            }}
+        """
+        self.setStyleSheet(style)
+
+    def _apply_ai_settings(self, settings: dict):
+        """Apply AI settings from the settings page."""
+        if not self.ai:
+            return
+        self.ai.set_force_cpu(bool(settings.get("force_cpu", False)))
+        self.ai.set_vram_limit(settings.get("vram_limit_gb"))
+        self.ai.idle_unload_seconds = int(settings.get("idle_unload_seconds", 600))
+        
+        default_model = settings.get("default_model")
+        if default_model and default_model in self.ai.MODELS and default_model != self.ai.model_key:
+            self.ai.switch_model(default_model)
+
+    def closeEvent(self, event):
+        """Clean shutdown of AI backend."""
+        if self.ai:
+            self.ai.shutdown()
+        event.accept()

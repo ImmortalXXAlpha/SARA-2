@@ -159,6 +159,8 @@ class MainWindow(QWidget):
             page = page_class(ai=self.ai, clean_tune_page=clean_tune)
         elif name == "Settings":
             page = page_class(ai=self.ai)
+        elif name == "Reports":
+            page = page_class(ai=self.ai)
         else:
             page = page_class()
             

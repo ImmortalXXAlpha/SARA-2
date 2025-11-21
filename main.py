@@ -5,9 +5,28 @@ Configured for local AI integration
 """
 
 import sys
+import os
+import ctypes
 import traceback
 from PySide6.QtWidgets import QApplication
 from ui.main_window import MainWindow
+
+
+def is_admin():
+    """Check if script has admin privileges."""
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
+
+
+def run_as_admin():
+    """Re-launch this script with admin privileges."""
+    ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", sys.executable, f'"{__file__}"', None, 1
+    )
+    sys.exit(0)
+
 
 # ------------------------------
 # Inline Stylesheet
@@ -154,6 +173,8 @@ QSlider::handle:horizontal:hover {
 
 def main():
     print("🚀 Starting SARA (AI Repair Agent)...")
+    print(f"🔐 Admin privileges: {is_admin()}")
+    
     try:
         app = QApplication(sys.argv)
         print("🧭 QApplication created")
@@ -173,4 +194,13 @@ def main():
 
 
 if __name__ == "__main__":
+    # Check for admin privileges and request if needed
+    if not is_admin():
+        print("🔐 Requesting admin privileges...")
+        run_as_admin()
+    
+    # Set working directory to script location
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(script_dir)
+    
     sys.exit(main())

@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QGridLayout, QLabel, QPushButton,
     QProgressBar, QFrame, QTextEdit, QDialog, QFileDialog,
     QHBoxLayout, QCheckBox, QDialogButtonBox, QMessageBox,
-    QGraphicsOpacityEffect, QApplication
+    QGraphicsOpacityEffect, QApplication, QScrollArea, QWidgetItem
 )
 
 # --------------------- VirusTotal API Key ---------------------
@@ -77,6 +77,8 @@ class WorkerSignals(QObject):
     progress = Signal(int)
     message = Signal(str)
     done = Signal(bool, str)
+    # results -> list of dicts: { "path": ..., "name": ..., "malicious": int }
+    results = Signal(object)
 
 
 # ----------------------------- Cleanup Options -----------------------------
@@ -114,6 +116,135 @@ class AdvancedCleanupDialog(QDialog):
             "edge": self.chk_edge.isChecked(),
             "firefox": self.chk_firefox.isChecked(),
         }
+
+
+# ----------------------------- Review Dialog (for SmartScan results) -----------------------------
+class ReviewDialog(QDialog):
+    """
+    Presents flagged files to the user with checkboxes and requires explicit confirmation
+    before any file deletion. Performs deletions in a background thread and reports results.
+    """
+
+    def __init__(self, flagged_list, parent=None):
+        """
+        flagged_list: list of dicts { "path": full_path, "name": filename, "malicious": int }
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Review flagged files")
+        self.setMinimumSize(700, 480)
+        self.flagged = flagged_list or []
+        self._checkboxes = []
+        self._init_ui()
+
+    def _init_ui(self):
+        v = QVBoxLayout(self)
+
+        info = QLabel(
+            "The following files were flagged by VirusTotal. Nothing will be removed automatically.\n"
+            "Select the files you want to delete and click 'Delete Selected' (requires confirmation)."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color:#cfd7ff;")
+        v.addWidget(info)
+
+        # Scroll area for file checkboxes
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setSpacing(8)
+        content_layout.setContentsMargins(8, 8, 8, 8)
+
+        for item in self.flagged:
+            name = item.get("name", os.path.basename(item.get("path", "")))
+            path = item.get("path", "")
+            bad = item.get("malicious", 0)
+            label_text = f"{name} — {bad} engine(s) flagged it\n{path}"
+            cb = QCheckBox(label_text)
+            cb.setChecked(True)  # default select flagged files so user can uncheck if they want
+            cb.setStyleSheet("color:#e8eef6;")
+            self._checkboxes.append((cb, path))
+            content_layout.addWidget(cb)
+
+        # If no flagged files, show message
+        if not self._checkboxes:
+            none_label = QLabel("No flagged files to review.")
+            none_label.setStyleSheet("color:#9eb3ff;")
+            content_layout.addWidget(none_label)
+
+        content_layout.addStretch()
+        scroll.setWidget(content)
+        v.addWidget(scroll, 1)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        self.delete_btn = QPushButton("🗑️ Delete Selected")
+        self.delete_btn.setStyleSheet("background:#af4e4e; color:white; padding:8px; border-radius:6px;")
+        self.delete_btn.clicked.connect(self._on_delete_clicked)
+
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.accept)
+
+        btn_row.addStretch()
+        btn_row.addWidget(self.delete_btn)
+        btn_row.addWidget(self.close_btn)
+        v.addLayout(btn_row)
+
+    def _on_delete_clicked(self):
+        # Build list of selected paths
+        selected = [p for cb, p in self._checkboxes if cb.isChecked() and p]
+        if not selected:
+            QMessageBox.information(self, "No files selected", "No files selected for deletion.")
+            return
+
+        # Confirm
+        count = len(selected)
+        resp = QMessageBox.question(
+            self,
+            "Confirm deletion",
+            f"Are you sure you want to permanently delete {count} file(s)? This action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if resp != QMessageBox.Yes:
+            return
+
+        # Disable UI while deleting
+        self.delete_btn.setEnabled(False)
+        self.close_btn.setEnabled(False)
+
+        # Run deletion in background thread to avoid UI freeze
+        def _delete_worker(paths):
+            results = []
+            for p in paths:
+                try:
+                    if os.path.exists(p) and os.path.isfile(p):
+                        os.remove(p)
+                        results.append((p, True, "Deleted"))
+                    else:
+                        results.append((p, False, "File missing"))
+                except Exception as e:
+                    results.append((p, False, str(e)))
+            # When done, re-enable buttons on main thread and show a summary dialog
+            summary_lines = []
+            deleted = 0
+            for p, ok, msg in results:
+                summary_lines.append(f"{os.path.basename(p)} — {'OK' if ok else 'FAILED'} — {msg}")
+                if ok:
+                    deleted += 1
+
+            summary = "\n".join(summary_lines)
+            # Use Qt functions in GUI thread via singleShot
+            QTimer.singleShot(0, lambda: self._post_delete_summary(deleted, len(results), summary))
+
+        t = threading.Thread(target=_delete_worker, args=(selected,), daemon=True)
+        t.start()
+
+    def _post_delete_summary(self, deleted, total, summary_text):
+        QMessageBox.information(self, "Deletion complete", f"Deleted {deleted}/{total} files.\n\nDetails:\n{summary_text}")
+        self.delete_btn.setEnabled(True)
+        self.close_btn.setEnabled(True)
+        # Optionally close dialog after deletion
+        self.accept()
 
 
 # ----------------------------- Main Page -----------------------------
@@ -254,6 +385,7 @@ class CleanTunePage(QWidget):
         sig.progress.connect(pbar.setValue)
         sig.message.connect(log.append)
         sig.done.connect(lambda ok, msg: self._finish(ok, msg, tool_name, log, card_timer, tlab))
+        sig.results.connect(lambda res: self._handle_scan_results(res, log, card_timer, tlab))
 
         if tool_name == "SmartScan (VirusTotal)":
             folder = None
@@ -367,6 +499,14 @@ class CleanTunePage(QWidget):
 
     # ------------------------- SmartScan -------------------------
     def _smartscan_worker(self, folder: str, sig: WorkerSignals):
+        """
+        Scans files in the given folder against VirusTotal and emits:
+         - sig.message for logs
+         - sig.progress for progress %
+         - sig.results with a list of flagged items (dicts)
+         - sig.done when finished
+        IMPORTANT: Does NOT delete anything automatically.
+        """
         if not os.path.isdir(folder):
             sig.done.emit(False, "Folder not found.")
             return
@@ -379,11 +519,21 @@ class CleanTunePage(QWidget):
             sig.done.emit(False, "SmartScan aborted.")
             return
 
+        flagged = []
         infected = 0
+        total = len(files)
         for i, path in enumerate(files, 1):
             name = os.path.basename(path)
             sig.message.emit(f"Hashing {name}...")
-            h = self._hash_file(path)
+            try:
+                h = self._hash_file(path)
+            except Exception as e:
+                sig.message.emit(f"Error hashing {name}: {e}")
+                sig.progress.emit(int(i * 100 / total))
+                QCoreApplication.processEvents()
+                time.sleep(0.1)
+                continue
+
             sig.message.emit(f"Querying VT for {name}...")
             try:
                 data = self._vt_lookup(h)
@@ -393,17 +543,44 @@ class CleanTunePage(QWidget):
                     if bad > 0:
                         infected += 1
                         sig.message.emit(f"⚠️ {name}: flagged by {bad} engines.")
+                        flagged.append({"path": path, "name": name, "malicious": bad})
                     else:
                         sig.message.emit(f"✅ {name}: clean.")
                 else:
                     sig.message.emit(f"ℹ️ {name}: not found on VT.")
             except Exception as e:
                 sig.message.emit(f"Error checking {name}: {e}")
-            sig.progress.emit(int(i * 100 / len(files)))
+
+            sig.progress.emit(int(i * 100 / total))
             QCoreApplication.processEvents()
-            time.sleep(0.3)
+            # slight delay to avoid rate-limiting bursts
+            time.sleep(0.25)
+
+        # Emit results for UI to present review dialog
+        sig.results.emit(flagged)
+
         msg = f"{infected} file(s) flagged." if infected else "All files clean ✅"
         sig.done.emit(True, msg)
+
+    def _handle_scan_results(self, results, log, card_timer, tlab):
+        """
+        Called in the main thread via signal when scan results are ready.
+        Shows a ReviewDialog that lets user choose files to delete (if any).
+        """
+        if not results:
+            log.append("No flagged files found.")
+            return
+
+        log.append("\n--- Flagged files ---")
+        for item in results:
+            log.append(f"{item.get('name')} — {item.get('malicious', 0)} engine(s) flagged")
+
+        # Show review dialog
+        dlg = ReviewDialog(results, parent=self)
+        dlg_result = dlg.exec()
+        # dlg will handle deletion and present summary; we can log outcome after close
+        log.append("Review dialog closed.")
+        # Optionally, we could refresh folder listing if deletions occurred, but keep it simple.
 
     # ------------------------- Helpers -------------------------
     def _finish(self, ok, msg, tool, log, card_timer, tlab):

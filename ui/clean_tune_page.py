@@ -23,7 +23,8 @@ from PySide6.QtWidgets import (
 # VirusTotal API Key
 VT_API_KEY = os.getenv("VT_API_KEY", "").strip()
 if not VT_API_KEY:
-    VT_API_KEY = "2bfe6972b6f0cfe9dd9b067fee7b1b5b0b7f6f1fe765c88d1750faf8333a7a9a"
+    #VT_API_KEY = "2bfe6972b6f0cfe9dd9b067fee7b1b5b0b7f6f1fe765c88d1750faf8333a7a9a"
+    VT_API_KEY = "b2a200436bea951ded7e32d851c3953d516b05078e6aea29485dde3e80c791e5"
 
 
 class LogWindow(QDialog):

@@ -161,6 +161,8 @@ class MainWindow(QWidget):
             page = page_class(ai=self.ai)
         elif name == "Reports":
             page = page_class(ai=self.ai)
+        elif name == "Clean Tune":
+            page = page_class(ai=self.ai)
         else:
             page = page_class()
             

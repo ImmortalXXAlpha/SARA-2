@@ -1,53 +1,60 @@
 # ui/settings_page.py
+"""
+Settings Page with scrollable content.
+"""
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QFrame, QCheckBox, QPushButton,
     QTabWidget, QHBoxLayout, QComboBox, QLineEdit, QTextEdit,
-    QScrollArea, QSizePolicy, QSlider, QFormLayout, QSpinBox
+    QScrollArea, QSlider, QFormLayout, QSpinBox, QGroupBox
 )
 from PySide6.QtCore import Qt, Signal
 import json
 import os
 
+
+SCROLL_STYLE = """
+    QScrollArea {
+        border: none;
+        background: transparent;
+    }
+    QScrollBar:vertical {
+        background: #1b2230;
+        width: 10px;
+        border-radius: 5px;
+        margin: 0;
+    }
+    QScrollBar::handle:vertical {
+        background: #3d4a6b;
+        border-radius: 5px;
+        min-height: 30px;
+    }
+    QScrollBar::handle:vertical:hover {
+        background: #6e8bff;
+    }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+        height: 0;
+    }
+"""
+
+
 class SettingsPage(QWidget):
-    theme_changed = Signal(str)  # Signal to notify theme change
-    ai_settings_changed = Signal(dict)  # Emit advanced AI settings when saved
+    theme_changed = Signal(str)
+    ai_settings_changed = Signal(dict)
 
     def __init__(self, ai=None):
         super().__init__()
-        self.ai = ai  # ADDED: Accept shared NovaAI instance
+        self.ai = ai
         self.current_theme = "dark"
         self.settings_path = os.path.join(os.path.expanduser("~"), ".sara_settings.json")
         self.settings = self.load_settings()
-
-        layout = QVBoxLayout()
-        layout.setContentsMargins(40, 40, 40, 40)
-        layout.setSpacing(25)
-
-        title = QLabel("⚙️ Settings")
-        title.setObjectName("title")
-        subtitle = QLabel("Customize your SARA preferences and behavior")
-        subtitle.setObjectName("subtitle")
-
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
-
-        # Create tabs
-        tabs = QTabWidget()
-
-        # Add tabs
-        tabs.addTab(self.create_general_tab(), "⚙️ General")
-        tabs.addTab(self.create_ai_models_tab(), "🧠 AI Models")
-        tabs.addTab(self.create_scripts_tab(), "📜 Scripts")
-
-        layout.addWidget(tabs)
-        self.setLayout(layout)
+        self._init_ui()
 
     def load_settings(self):
         try:
             with open(self.settings_path, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
-            # default fallback
+        except:
             return {
                 "default_model": "phi3-mini",
                 "force_cpu": False,
@@ -59,376 +66,329 @@ class SettingsPage(QWidget):
                 "system_prompt": ""
             }
 
-    def save_settings_file(self, d):
+    def save_settings_file(self):
         try:
             with open(self.settings_path, "w", encoding="utf-8") as f:
-                json.dump(d, f, indent=2)
+                json.dump(self.settings, f, indent=2)
         except Exception as e:
-            print("Failed to save settings:", e)
+            print(f"Settings save error: {e}")
 
-    # ==================== GENERAL TAB ====================
-    def create_general_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+
+        title = QLabel("⚙️ Settings")
+        title.setObjectName("title")
+        subtitle = QLabel("Customize SARA preferences and AI behavior")
+        subtitle.setObjectName("subtitle")
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._create_general_tab(), "⚙️ General")
+        tabs.addTab(self._create_ai_tab(), "🧠 AI Models")
+        tabs.addTab(self._create_advanced_tab(), "🔧 Advanced")
+        layout.addWidget(tabs)
+
+    def _create_scrollable_tab(self, content_widget):
+        """Wrap content in a scroll area."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(SCROLL_STYLE)
+        scroll.setWidget(content_widget)
+        return scroll
+
+    def _create_general_tab(self):
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(20)
 
-        sys_pref_label = QLabel("System Preferences")
-        sys_pref_label.setStyleSheet("font-size: 18px; font-weight: 600;")
-        sys_pref_subtitle = QLabel("Configure automatic scans and system behavior")
-        sys_pref_subtitle.setStyleSheet("font-size: 13px; margin-bottom: 10px;")
-
-        layout.addWidget(sys_pref_label)
-        layout.addWidget(sys_pref_subtitle)
-
-        settings_card = QFrame()
-        settings_card.setStyleSheet("""
-            QFrame {
-                border-radius: 12px;
-                border: 1px solid #2b3548;
-                padding: 10px;
-            }
-        """)
-        inner = QVBoxLayout(settings_card)
-        inner.setContentsMargins(20, 20, 20, 20)
-        inner.setSpacing(15)
-
-        theme_layout = QHBoxLayout()
-        theme_label = QLabel("Theme Mode")
-        theme_label.setStyleSheet("font-size: 14px;")
+        # Theme group
+        theme_group = QGroupBox("Appearance")
+        theme_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        theme_layout = QVBoxLayout(theme_group)
+        
+        theme_row = QHBoxLayout()
+        theme_row.addWidget(QLabel("Theme Mode:"))
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(["Dark Mode", "Light Mode"])
-        self.theme_combo.setCurrentText("Dark Mode" if self.current_theme == "dark" else "Light Mode")
-        self.theme_combo.currentTextChanged.connect(self.on_theme_changed)
-        theme_layout.addWidget(theme_label)
-        theme_layout.addStretch()
-        theme_layout.addWidget(self.theme_combo)
+        self.theme_combo.currentTextChanged.connect(self._on_theme_changed)
+        theme_row.addWidget(self.theme_combo)
+        theme_row.addStretch()
+        theme_layout.addLayout(theme_row)
+        layout.addWidget(theme_group)
 
-        self.notif_check = QCheckBox("Enable Notifications")
+        # System group
+        sys_group = QGroupBox("System Preferences")
+        sys_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        sys_layout = QVBoxLayout(sys_group)
+        
+        self.notif_check = QCheckBox("Enable desktop notifications")
         self.notif_check.setChecked(self.settings.get("notifications", True))
-        self.updates_check = QCheckBox("Automatically Check for Updates")
+        
+        self.updates_check = QCheckBox("Check for updates automatically")
         self.updates_check.setChecked(self.settings.get("auto_updates", True))
-        self.auto_scan_check = QCheckBox("Run Daily System Scans")
-        self.auto_scan_check.setChecked(self.settings.get("auto_scan", True))
+        
+        self.startup_check = QCheckBox("Start SARA with Windows")
+        self.startup_check.setChecked(self.settings.get("start_with_windows", False))
+        
+        sys_layout.addWidget(self.notif_check)
+        sys_layout.addWidget(self.updates_check)
+        sys_layout.addWidget(self.startup_check)
+        layout.addWidget(sys_group)
 
-        scan_layout = QHBoxLayout()
-        scan_label = QLabel("Scan Schedule")
-        scan_combo = QComboBox()
-        scan_combo.addItems(["Daily at 2:00 AM", "Weekly on Sunday", "Manual only"])
-
-        scan_layout.addWidget(scan_label)
-        scan_layout.addStretch()
-        scan_layout.addWidget(scan_combo)
-
-        save_btn = QPushButton("💾 Save Settings")
-        save_btn.clicked.connect(self.save_general_settings)
-
-        inner.addLayout(theme_layout)
-        inner.addWidget(self.notif_check)
-        inner.addWidget(self.updates_check)
-        inner.addWidget(self.auto_scan_check)
-        inner.addLayout(scan_layout)
-        inner.addStretch()
-        inner.addWidget(save_btn)
-
-        layout.addWidget(settings_card)
+        # Save button
+        save_btn = QPushButton("💾 Save General Settings")
+        save_btn.clicked.connect(self._save_general)
+        layout.addWidget(save_btn)
+        
         layout.addStretch()
-        widget.setLayout(layout)
-        return widget
+        return self._create_scrollable_tab(content)
 
-    # ==================== AI MODELS TAB ====================
-    def create_ai_models_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
+    def _create_ai_tab(self):
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(18)
+        layout.setSpacing(20)
 
-        ai_title = QLabel("AI Model Preferences")
-        ai_title.setStyleSheet("font-size: 18px; font-weight: 600;")
-        ai_subtitle = QLabel("Choose and configure AI models for different tasks")
-        ai_subtitle.setStyleSheet("font-size: 13px; margin-bottom: 10px;")
-
-        layout.addWidget(ai_title)
-        layout.addWidget(ai_subtitle)
-
-        model_card = QFrame()
-        model_card.setStyleSheet("""
-            QFrame { border-radius: 12px; border: 1px solid #2b3548; padding: 10px; }
-        """)
-        model_layout = QVBoxLayout(model_card)
-        model_layout.setContentsMargins(20, 20, 20, 20)
-        model_layout.setSpacing(12)
-
-        primary_layout = QHBoxLayout()
-        primary_label = QLabel("Primary AI Model")
-        primary_label.setStyleSheet("font-size: 14px;")
+        # Model selection group
+        model_group = QGroupBox("Model Selection")
+        model_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        model_layout = QVBoxLayout(model_group)
+        
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("Default Model:"))
         self.model_combo = QComboBox()
-        # UPDATED: Use model keys from shared AI instance if available
-        if self.ai:
-            model_keys = list(self.ai.MODELS.keys())
+        if self.ai and hasattr(self.ai, 'MODELS'):
+            self.model_combo.addItems(list(self.ai.MODELS.keys()))
         else:
-            model_keys = ["phi3-mini", "mistral-7b", "deepseek-1.5b", "qwen2.5-1.5b"]
-        self.model_combo.addItems(model_keys)
+            self.model_combo.addItems(["phi3-mini", "mistral-7b", "deepseek-1.5b", "qwen2.5-1.5b"])
         current = self.settings.get("default_model", "phi3-mini")
-        idx = model_keys.index(current) if current in model_keys else 0
-        self.model_combo.setCurrentIndex(idx)
-        primary_layout.addWidget(primary_label)
-        primary_layout.addStretch()
-        primary_layout.addWidget(self.model_combo)
-        model_layout.addLayout(primary_layout)
+        idx = self.model_combo.findText(current)
+        if idx >= 0:
+            self.model_combo.setCurrentIndex(idx)
+        model_row.addWidget(self.model_combo)
+        model_row.addStretch()
+        model_layout.addLayout(model_row)
+        
+        # Model info
+        self.model_info = QLabel()
+        self.model_info.setWordWrap(True)
+        self.model_info.setStyleSheet("color: #9eb3ff; padding: 10px; background: #0f1522; border-radius: 6px;")
+        self._update_model_info(self.model_combo.currentText())
+        self.model_combo.currentTextChanged.connect(self._update_model_info)
+        model_layout.addWidget(self.model_info)
+        
+        layout.addWidget(model_group)
 
-        # Model info box
-        self.model_info_frame = QFrame()
-        self.model_info_frame.setStyleSheet("QFrame { border: 1px solid #2b3548; border-radius: 8px; padding: 8px; }")
-        info_layout = QVBoxLayout(self.model_info_frame)
-        info_layout.setContentsMargins(12, 12, 12, 12)
-        self.model_info_label = QLabel()
-        self.model_info_label.setWordWrap(True)
-        info_layout.addWidget(self.model_info_label)
-        model_layout.addWidget(self.model_info_frame)
-        self.update_model_info(self.model_combo.currentText())
-        self.model_combo.currentTextChanged.connect(self.update_model_info)
-
-        # Advanced settings (embedded)
-        adv_card = QFrame()
-        adv_card.setStyleSheet("QFrame { border-radius: 10px; border: 1px dashed #2b3548; padding: 10px; }")
-        adv_layout = QVBoxLayout(adv_card)
-        adv_layout.setContentsMargins(12, 12, 12, 12)
-        adv_layout.setSpacing(10)
-
-        adv_title = QLabel("Advanced Model Settings")
-        adv_title.setStyleSheet("font-weight: 600; font-size: 14px;")
-        adv_layout.addWidget(adv_title)
-
-        form = QFormLayout()
-        # Max tokens (spin box)
+        # Generation settings group
+        gen_group = QGroupBox("Generation Settings")
+        gen_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        gen_layout = QFormLayout(gen_group)
+        gen_layout.setSpacing(15)
+        
+        # Max tokens
         self.max_tokens_spin = QSpinBox()
-        self.max_tokens_spin.setRange(32, 4096)
+        self.max_tokens_spin.setRange(32, 2048)
         self.max_tokens_spin.setValue(int(self.settings.get("max_tokens", 256)))
-        form.addRow("Max Tokens:", self.max_tokens_spin)
-
-        # Temperature slider (0.0 - 2.0)
-        temp_row = QHBoxLayout()
+        gen_layout.addRow("Max Tokens:", self.max_tokens_spin)
+        
+        # Temperature
+        temp_widget = QWidget()
+        temp_layout = QHBoxLayout(temp_widget)
+        temp_layout.setContentsMargins(0, 0, 0, 0)
         self.temp_slider = QSlider(Qt.Horizontal)
-        self.temp_slider.setRange(10, 200)  # map to 0.1 - 2.0
+        self.temp_slider.setRange(10, 200)
         self.temp_slider.setValue(int(self.settings.get("temperature", 0.7) * 100))
         self.temp_label = QLabel(f"{self.settings.get('temperature', 0.7):.2f}")
+        self.temp_label.setFixedWidth(40)
         self.temp_slider.valueChanged.connect(lambda v: self.temp_label.setText(f"{v/100:.2f}"))
-        temp_row.addWidget(self.temp_slider)
-        temp_row.addWidget(self.temp_label)
-        form.addRow("Temperature:", temp_row)
-
-        # Top-p slider
-        top_p_row = QHBoxLayout()
+        temp_layout.addWidget(self.temp_slider)
+        temp_layout.addWidget(self.temp_label)
+        gen_layout.addRow("Temperature:", temp_widget)
+        
+        # Top-P
+        top_p_widget = QWidget()
+        top_p_layout = QHBoxLayout(top_p_widget)
+        top_p_layout.setContentsMargins(0, 0, 0, 0)
         self.top_p_slider = QSlider(Qt.Horizontal)
-        self.top_p_slider.setRange(0, 100)
+        self.top_p_slider.setRange(10, 100)
         self.top_p_slider.setValue(int(self.settings.get("top_p", 0.9) * 100))
         self.top_p_label = QLabel(f"{self.settings.get('top_p', 0.9):.2f}")
+        self.top_p_label.setFixedWidth(40)
         self.top_p_slider.valueChanged.connect(lambda v: self.top_p_label.setText(f"{v/100:.2f}"))
-        top_p_row.addWidget(self.top_p_slider)
-        top_p_row.addWidget(self.top_p_label)
-        form.addRow("Top-P:", top_p_row)
+        top_p_layout.addWidget(self.top_p_slider)
+        top_p_layout.addWidget(self.top_p_label)
+        gen_layout.addRow("Top-P:", top_p_widget)
+        
+        layout.addWidget(gen_group)
 
-        # System prompt editor
-        self.system_prompt_edit = QTextEdit()
-        self.system_prompt_edit.setPlaceholderText("System prompt for SARA (persisted)")
-        self.system_prompt_edit.setMaximumHeight(120)
-        self.system_prompt_edit.setPlainText(self.settings.get("system_prompt", ""))
+        # System prompt
+        prompt_group = QGroupBox("System Prompt")
+        prompt_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        prompt_layout = QVBoxLayout(prompt_group)
+        
+        self.system_prompt = QTextEdit()
+        self.system_prompt.setPlaceholderText("Optional: Enter a custom system prompt for SARA...")
+        self.system_prompt.setMaximumHeight(100)
+        self.system_prompt.setPlainText(self.settings.get("system_prompt", ""))
+        prompt_layout.addWidget(self.system_prompt)
+        layout.addWidget(prompt_group)
 
-        # Force CPU toggle
-        self.force_cpu_check = QCheckBox("Force CPU mode (disable GPU)")
-        self.force_cpu_check.setChecked(bool(self.settings.get("force_cpu", False)))
+        # Save button
+        save_btn = QPushButton("💾 Save AI Settings")
+        save_btn.clicked.connect(self._save_ai_settings)
+        layout.addWidget(save_btn)
+        
+        layout.addStretch()
+        return self._create_scrollable_tab(content)
 
-        # VRAM budget combo
+    def _create_advanced_tab(self):
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(20)
+
+        # Hardware group
+        hw_group = QGroupBox("Hardware Settings")
+        hw_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        hw_layout = QVBoxLayout(hw_group)
+        
+        self.force_cpu_check = QCheckBox("Force CPU mode (disable GPU acceleration)")
+        self.force_cpu_check.setChecked(self.settings.get("force_cpu", False))
+        hw_layout.addWidget(self.force_cpu_check)
+        
+        vram_row = QHBoxLayout()
+        vram_row.addWidget(QLabel("VRAM Budget:"))
         self.vram_combo = QComboBox()
-        vram_options = ["No Limit", "2 GB", "4 GB", "6 GB", "8 GB"]
-        self.vram_combo.addItems(vram_options)
-        current_limit = self.settings.get("vram_limit_gb", None)
-        if current_limit is None:
-            self.vram_combo.setCurrentIndex(0)
-        else:
-            # choose nearest
-            mapping = {2:1,4:2,6:3,8:4}
-            idx = mapping.get(int(current_limit), 0)
+        self.vram_combo.addItems(["Auto (No Limit)", "2 GB", "4 GB", "6 GB", "8 GB", "12 GB"])
+        vram_limit = self.settings.get("vram_limit_gb")
+        if vram_limit:
+            idx = {2: 1, 4: 2, 6: 3, 8: 4, 12: 5}.get(int(vram_limit), 0)
             self.vram_combo.setCurrentIndex(idx)
+        vram_row.addWidget(self.vram_combo)
+        vram_row.addStretch()
+        hw_layout.addLayout(vram_row)
+        
+        layout.addWidget(hw_group)
 
-        # Idle unload
-        idle_layout = QHBoxLayout()
-        idle_label = QLabel("Auto-unload after (minutes):")
+        # Memory management group
+        mem_group = QGroupBox("Memory Management")
+        mem_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        mem_layout = QVBoxLayout(mem_group)
+        
+        idle_row = QHBoxLayout()
+        idle_row.addWidget(QLabel("Auto-unload model after idle (minutes):"))
         self.idle_spin = QSpinBox()
         self.idle_spin.setRange(0, 240)
         self.idle_spin.setValue(int(self.settings.get("idle_unload_seconds", 600) / 60))
-        idle_layout.addWidget(idle_label)
-        idle_layout.addStretch()
-        idle_layout.addWidget(self.idle_spin)
+        self.idle_spin.setSpecialValueText("Never")
+        idle_row.addWidget(self.idle_spin)
+        idle_row.addStretch()
+        mem_layout.addLayout(idle_row)
+        
+        mem_layout.addWidget(QLabel("Setting to 0 disables auto-unload (model stays in memory)"))
+        
+        layout.addWidget(mem_group)
 
-        # Apply button
-        apply_btn = QPushButton("Apply Model Settings")
-        apply_btn.clicked.connect(self.apply_ai_settings)
+        # Data group
+        data_group = QGroupBox("Data & Storage")
+        data_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        data_layout = QVBoxLayout(data_group)
+        
+        clear_cache_btn = QPushButton("🗑️ Clear Model Cache")
+        clear_cache_btn.clicked.connect(self._clear_cache)
+        data_layout.addWidget(clear_cache_btn)
+        
+        reset_btn = QPushButton("⚠️ Reset All Settings")
+        reset_btn.setStyleSheet("QPushButton { color: #e74c3c; }")
+        reset_btn.clicked.connect(self._reset_settings)
+        data_layout.addWidget(reset_btn)
+        
+        layout.addWidget(data_group)
 
-        adv_layout.addLayout(form)
-        adv_layout.addWidget(QLabel("System Prompt:"))
-        adv_layout.addWidget(self.system_prompt_edit)
-        adv_layout.addWidget(self.force_cpu_check)
-        adv_layout.addLayout(idle_layout)
-        adv_layout.addWidget(QLabel("VRAM Budget:"))
-        adv_layout.addWidget(self.vram_combo)
-        adv_layout.addWidget(apply_btn)
-
-        model_layout.addWidget(adv_card)
-        layout.addWidget(model_card)
+        # Save button
+        save_btn = QPushButton("💾 Save Advanced Settings")
+        save_btn.clicked.connect(self._save_advanced_settings)
+        layout.addWidget(save_btn)
+        
         layout.addStretch()
-        widget.setLayout(layout)
-        return widget
+        return self._create_scrollable_tab(content)
 
-    # ==================== SCRIPTS TAB ====================
-    def create_scripts_tab(self):
-        widget = QWidget()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll_content = QWidget()
-        layout = QVBoxLayout(scroll_content)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(20)
+    def _update_model_info(self, model_name):
+        info = {
+            "phi3-mini": "Phi-3.5 Mini - Fast and efficient, great for system tasks. ~3GB VRAM.",
+            "mistral-7b": "Mistral 7B - Powerful reasoning, good for complex analysis. ~6GB VRAM.",
+            "deepseek-1.5b": "DeepSeek 1.5B - Ultra-lightweight, very fast responses. ~2GB VRAM.",
+            "qwen2.5-1.5b": "Qwen 2.5 1.5B - Compact and capable, good balance. ~1.5GB VRAM."
+        }
+        self.model_info.setText(info.get(model_name, "Unknown model"))
 
-        scripts_title = QLabel("Script Library Management")
-        scripts_subtitle = QLabel("Manage custom scripts for specialized system operations")
-        layout.addWidget(scripts_title)
-        layout.addWidget(scripts_subtitle)
-
-        add_card = QFrame()
-        add_card.setStyleSheet("QFrame {border-radius:12px;border:1px solid #2b3548;padding:10px;}")
-        add_layout = QVBoxLayout(add_card)
-        add_layout.setContentsMargins(20,20,20,20)
-        add_layout.setSpacing(12)
-
-        name_label = QLabel("Script Name")
-        self.script_name_input = QLineEdit()
-        desc_label = QLabel("Description")
-        self.script_desc_input = QTextEdit()
-        self.script_desc_input.setMaximumHeight(80)
-
-        add_btn = QPushButton("+ Add Script")
-        add_btn.clicked.connect(self.add_script)
-
-        add_layout.addWidget(name_label)
-        add_layout.addWidget(self.script_name_input)
-        add_layout.addWidget(desc_label)
-        add_layout.addWidget(self.script_desc_input)
-        add_layout.addWidget(add_btn)
-
-        layout.addWidget(add_card)
-
-        scripts_data = [
-            ("Advanced Registry Cleaner", "Maintenance", "Comprehensive registry cleanup and optimization", "2025-09-23"),
-            ("Network Diagnostics", "Network", "Diagnose and fix network connectivity issues", "2025-09-22"),
-            ("GPU Performance Test", "Hardware", "Test graphics card performance and stability", "2025-09-21"),
-        ]
-
-        for name, category, desc, last_used in scripts_data:
-            script_card = self.create_script_card(name, category, desc, last_used)
-            layout.addWidget(script_card)
-
-        layout.addStretch()
-        scroll.setWidget(scroll_content)
-        main_layout = QVBoxLayout(widget)
-        main_layout.addWidget(scroll)
-        return widget
-
-    def create_script_card(self, name, category, description, last_used):
-        card = QFrame()
-        card.setStyleSheet("QFrame { border-radius: 12px; border: 1px solid #2b3548; padding: 10px; }")
-        layout = QVBoxLayout(card)
-        header_layout = QHBoxLayout()
-        name_label = QLabel(name)
-        category_badge = QLabel(category)
-        category_badge.setStyleSheet("background: #2b3548; color: #9eb3ff; padding: 4px 10px; border-radius:6px; font-weight:600;")
-        header_layout.addWidget(name_label)
-        header_layout.addWidget(category_badge)
-        header_layout.addStretch()
-
-        desc_label = QLabel(description)
-        desc_label.setWordWrap(True)
-        last_used_label = QLabel(f"Last used: {last_used}")
-        last_used_label.setStyleSheet("font-size:12px; font-style:italic; opacity:0.7;")
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        edit_btn = QPushButton("✏️ Edit")
-        delete_btn = QPushButton("🗑️ Delete")
-        btn_layout.addWidget(edit_btn)
-        btn_layout.addWidget(delete_btn)
-
-        layout.addLayout(header_layout)
-        layout.addWidget(desc_label)
-        layout.addWidget(last_used_label)
-        layout.addLayout(btn_layout)
-        return card
-
-    # ==================== EVENT HANDLERS ====================
-    def on_theme_changed(self, theme_text):
-        if theme_text == "Dark Mode":
-            self.current_theme = "dark"
-        else:
-            self.current_theme = "light"
+    def _on_theme_changed(self, text):
+        self.current_theme = "dark" if "Dark" in text else "light"
         self.theme_changed.emit(self.current_theme)
 
-    def save_general_settings(self):
-        # write whatever general settings you want persisted
+    def _save_general(self):
         self.settings["notifications"] = self.notif_check.isChecked()
         self.settings["auto_updates"] = self.updates_check.isChecked()
-        self.settings["auto_scan"] = self.auto_scan_check.isChecked()
-        self.save_settings_file(self.settings)
-        print("Settings saved!")
+        self.settings["start_with_windows"] = self.startup_check.isChecked()
+        self.save_settings_file()
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.information(self, "Saved", "General settings saved!")
 
-    def update_model_info(self, model_name):
-        # provide helpful text for model keys
-        info = {
-            "phi3-mini": "<b>Phi-3.5 Mini (phi3-mini)</b><br>Fast, low VRAM — great for log parsing and sysadmin tasks.",
-            "mistral-7b": "<b>Mistral 7B (mistral-7b)</b><br>Powerful & balanced, good for more nuanced reasoning.",
-            "deepseek-1.5b": "<b>DeepSeek 1.5B</b><br>Very lightweight, fast local parsing and short answers.",
-            "qwen2.5-1.5b": "<b>Qwen 2.5B</b><br>Ultra-light, great for small tasks and prototypes."
-        }
-        self.model_info_label.setText(info.get(model_name, "Unknown model"))
-
-    def apply_ai_settings(self):
-        # build settings dict from UI
-        vram_idx = self.vram_combo.currentIndex()
-        vram_map = {0: None, 1:2, 2:4, 3:6, 4:8}
-        
-        sg = {
-            "default_model": self.model_combo.currentText(),
-            "force_cpu": self.force_cpu_check.isChecked(),
-            "vram_limit_gb": vram_map.get(vram_idx, None),
-            "idle_unload_seconds": int(self.idle_spin.value() * 60),
-            "max_tokens": int(self.max_tokens_spin.value()),
-            "temperature": float(self.temp_slider.value() / 100.0),
-            "top_p": float(self.top_p_slider.value() / 100.0),
-            "system_prompt": self.system_prompt_edit.toPlainText()
-        }
-        # merge into settings & persist
-        self.settings.update(sg)
-        self.save_settings_file(self.settings)
-        
-        # UPDATED: Apply to shared AI instance if available
-        if self.ai:
-            self.ai.set_force_cpu(self.settings.get("force_cpu", False))
-            self.ai.set_vram_limit(self.settings.get("vram_limit_gb", None))
-            self.ai.idle_unload_seconds = int(self.settings.get("idle_unload_seconds", 600))
-            # optionally switch model
-            default_model = self.settings.get("default_model")
-            if default_model and default_model in self.ai.MODELS:
-                self.ai.switch_model(default_model)
-        
-        # emit the settings to interested components
+    def _save_ai_settings(self):
+        self.settings["default_model"] = self.model_combo.currentText()
+        self.settings["max_tokens"] = self.max_tokens_spin.value()
+        self.settings["temperature"] = self.temp_slider.value() / 100.0
+        self.settings["top_p"] = self.top_p_slider.value() / 100.0
+        self.settings["system_prompt"] = self.system_prompt.toPlainText()
+        self.save_settings_file()
         self.ai_settings_changed.emit(self.settings)
-        print("AI model settings applied and saved.")
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.information(self, "Saved", "AI settings saved!")
 
-    def add_script(self):
-        name = self.script_name_input.text().strip()
-        desc = self.script_desc_input.toPlainText().strip()
-        if not name or not desc:
-            print("Please fill in both script name and description")
-            return
-        print(f"Adding script: {name}")
-        self.script_name_input.clear()
-        self.script_desc_input.clear()
+    def _save_advanced_settings(self):
+        self.settings["force_cpu"] = self.force_cpu_check.isChecked()
+        vram_map = {0: None, 1: 2, 2: 4, 3: 6, 4: 8, 5: 12}
+        self.settings["vram_limit_gb"] = vram_map.get(self.vram_combo.currentIndex())
+        self.settings["idle_unload_seconds"] = self.idle_spin.value() * 60
+        self.save_settings_file()
+        self.ai_settings_changed.emit(self.settings)
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.information(self, "Saved", "Advanced settings saved!")
+
+    def _clear_cache(self):
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(self, "Clear Cache", 
+            "This will clear downloaded model files.\nYou'll need to re-download models.\n\nContinue?")
+        if reply == QMessageBox.Yes:
+            # Clear HuggingFace cache
+            cache_dir = os.path.expanduser("~/.cache/huggingface")
+            if os.path.exists(cache_dir):
+                import shutil
+                try:
+                    shutil.rmtree(cache_dir)
+                    QMessageBox.information(self, "Done", "Model cache cleared!")
+                except Exception as e:
+                    QMessageBox.warning(self, "Error", f"Could not clear cache: {e}")
+
+    def _reset_settings(self):
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.warning(self, "Reset Settings",
+            "This will reset ALL settings to defaults.\n\nAre you sure?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            self.settings = {
+                "default_model": "phi3-mini",
+                "force_cpu": False,
+                "vram_limit_gb": None,
+                "idle_unload_seconds": 600,
+                "max_tokens": 256,
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "system_prompt": ""
+            }
+            self.save_settings_file()
+            QMessageBox.information(self, "Reset", "Settings reset to defaults. Please restart SARA.")

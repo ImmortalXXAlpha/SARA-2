@@ -23,17 +23,27 @@ from PySide6.QtWidgets import (
 # VirusTotal API Key
 VT_API_KEY = os.getenv("VT_API_KEY", "").strip()
 if not VT_API_KEY:
-    #VT_API_KEY = "2bfe6972b6f0cfe9dd9b067fee7b1b5b0b7f6f1fe765c88d1750faf8333a7a9a"
-    VT_API_KEY = "b2a200436bea951ded7e32d851c3953d516b05078e6aea29485dde3e80c791e5"
+    #VT_API_KEY = "2bfe6972b6f0cfe9dd9b067fee7b1b5b0b7f6f1fe765c88d1750faf8333a7a9a" #John's
+    VT_API_KEY = "b2a200436bea951ded7e32d851c3953d516b05078e6aea29485dde3e80c791e5" #Mango's
 
 
 class LogWindow(QDialog):
     closed = Signal()
+    finished = Signal(bool, str)
 
-    def __init__(self, title: str):
+    def __init__(self, title: str, tool_name: str = None):
         super().__init__()
         self.setWindowTitle(title)
         self.setMinimumSize(800, 520)
+        
+        # Track result status
+        self._success = False
+        self._message = ""
+        self._auto_close = False
+        self._tool_name = tool_name
+        
+        # Completion detector
+        self._detector = ToolCompletionDetector(tool_name) if tool_name else None
 
         v = QVBoxLayout(self)
         self.text = QTextEdit(readOnly=True)
@@ -57,24 +67,224 @@ class LogWindow(QDialog):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(1000)
+        
+        # Auto-close timer
+        self._auto_close_timer = None
 
     def _tick(self):
         secs = int((datetime.now() - self._start).total_seconds())
         self.timer_label.setText(f"⏱ Elapsed: {secs}s")
+        
+        # Check if detector says we're complete
+        if self._detector and self._detector.is_complete and not self._auto_close_timer:
+            # Tool completed - set result and prepare to auto-close
+            self.set_result(self._detector.success, self._detector.message)
+            
+            # In workflow mode, auto-close after short delay
+            if hasattr(self, '_workflow_mode') and self._workflow_mode:
+                self.set_auto_close(True, delay_ms=2000)
 
     def append(self, s: str):
         if s:
             self.text.append(s)
             self.text.verticalScrollBar().setValue(self.text.verticalScrollBar().maximum())
+            
+            # Feed to detector
+            if self._detector:
+                self._detector.add_line(s)
 
     def stop_timer(self):
         if self._timer.isActive():
             self._timer.stop()
+        if self._auto_close_timer:
+            self._auto_close_timer.stop()
+    
+    def set_result(self, success: bool, message: str):
+        """Set the result of the operation."""
+        # Only set once (first result wins)
+        if not self._message:
+            self._success = success
+            self._message = message
+            
+            # Update window title to show status
+            status_icon = "✅" if success else "❌"
+            self.setWindowTitle(f"{status_icon} {self.windowTitle()}")
+    
+    def set_workflow_mode(self, enabled: bool):
+        """Enable workflow mode for this window."""
+        self._workflow_mode = enabled
+    
+    def set_auto_close(self, auto_close: bool, delay_ms: int = 2000):
+        """Enable auto-close after completion."""
+        if auto_close and not self._auto_close_timer:
+            self._auto_close_timer = QTimer(self)
+            self._auto_close_timer.setSingleShot(True)
+            self._auto_close_timer.timeout.connect(self.close)
+            self._auto_close_timer.start(delay_ms)
+    
+    def force_completion_check(self):
+        """Force a final completion check when process ends."""
+        if self._detector:
+            self._detector.force_check_completion()
+            if not self._message:  # If result not already set
+                self.set_result(self._detector.success, self._detector.message)
 
     def closeEvent(self, e):
         self.stop_timer()
+        
+        # If no result set yet (user closed manually), assume cancelled
+        if not self._message:
+            self._success = False
+            self._message = "Cancelled by user"
+        
+        self.finished.emit(self._success, self._message)
         self.closed.emit()
         super().closeEvent(e)
+
+class ToolCompletionDetector:
+    """
+    Detects when tools complete and determines success/failure from output.
+    """
+    
+    # Completion patterns for each tool
+    COMPLETION_PATTERNS = {
+        "System File Checker (SFC)": {
+            "success": [
+                "verification 100% complete",
+                "did not find any integrity violations",
+                "successfully repaired",
+                "windows resource protection found corrupt files and successfully repaired them"
+            ],
+            "failure": [
+                "windows resource protection found corrupt files but was unable to fix",
+                "could not perform the requested operation",
+                "windows resource protection could not start the repair service"
+            ],
+            "info": [
+                "windows resource protection did not find any integrity violations"
+            ]
+        },
+        "DISM Repair": {
+            "success": [
+                "operation completed successfully",
+                "the restore operation completed successfully",
+                "the operation completed successfully"
+            ],
+            "failure": [
+                "error:",
+                "failed",
+                "the operation failed",
+                "could not"
+            ],
+            "info": [
+                "no component store corruption detected"
+            ]
+        },
+        "Cleanup Temp Files": {
+            "success": [
+                "✅ cleanup complete",
+                "cleanup complete"
+            ],
+            "failure": [
+                "cleanup failed:",
+                "error:"
+            ],
+            "info": []
+        },
+        "SmartScan (VirusTotal)": {
+            "success": [
+                "scan complete:",
+                "all files clean"
+            ],
+            "failure": [
+                "smartscan aborted",
+                "failed to get admin"
+            ],
+            "info": [
+                "flagged out of"
+            ]
+        }
+    }
+    
+    def __init__(self, tool_name: str):
+        self.tool_name = tool_name
+        self.output_buffer = []
+        self.max_buffer_size = 50  # Keep last 50 lines
+        self.is_complete = False
+        self.success = False
+        self.message = ""
+    
+    def add_line(self, line: str):
+        """Add a line of output and check for completion."""
+        if not line or not line.strip():
+            return
+        
+        # Add to buffer
+        self.output_buffer.append(line.lower())
+        if len(self.output_buffer) > self.max_buffer_size:
+            self.output_buffer.pop(0)
+        
+        # Check if tool has completed
+        if not self.is_complete:
+            self._check_completion()
+    
+    def _check_completion(self):
+        """Check if tool has completed based on output patterns."""
+        patterns = self.COMPLETION_PATTERNS.get(self.tool_name, {})
+        
+        # Get last 10 lines for checking
+        recent_output = "\n".join(self.output_buffer[-10:])
+        
+        # Check for success patterns
+        for pattern in patterns.get("success", []):
+            if pattern.lower() in recent_output:
+                self.is_complete = True
+                self.success = True
+                self.message = self._extract_message(pattern)
+                return
+        
+        # Check for info patterns (also success, but with context)
+        for pattern in patterns.get("info", []):
+            if pattern.lower() in recent_output:
+                self.is_complete = True
+                self.success = True
+                self.message = self._extract_message(pattern)
+                return
+        
+        # Check for failure patterns
+        for pattern in patterns.get("failure", []):
+            if pattern.lower() in recent_output:
+                self.is_complete = True
+                self.success = False
+                self.message = self._extract_message(pattern)
+                return
+    
+    def _extract_message(self, pattern: str) -> str:
+        """Extract a meaningful message based on the pattern matched."""
+        # Find the line containing the pattern
+        for line in reversed(self.output_buffer):
+            if pattern.lower() in line:
+                # Clean up and return the line
+                return line.strip()
+        return pattern
+    
+    def force_check_completion(self):
+        """Force a completion check (called when process ends)."""
+        if not self.is_complete:
+            self._check_completion()
+        
+        # If still not marked complete after process ends, check return code context
+        if not self.is_complete:
+            # Look for generic completion indicators
+            recent = "\n".join(self.output_buffer[-5:])
+            if any(word in recent for word in ["complete", "finished", "done", "success"]):
+                self.is_complete = True
+                self.success = True
+                self.message = "Completed"
+            else:
+                self.is_complete = True
+                self.success = False
+                self.message = "Completed with unknown status"
 
 
 class WorkerSignals(QObject):
@@ -82,6 +292,7 @@ class WorkerSignals(QObject):
     message = Signal(str)
     done = Signal(bool, str)
     results = Signal(object)
+    line_added = Signal(str)
 
 
 class AdvancedCleanupDialog(QDialog):
@@ -590,12 +801,21 @@ class CleanTunePage(QWidget):
         return card, bar, tl
 
     def _start_tool(self, tool_name: str):
+        # Check if in workflow mode
+        in_workflow = hasattr(self, '_in_workflow_mode') and self._in_workflow_mode
+        
         pbar = self.progress_bars[tool_name]
         tlab = self.time_labels[tool_name]
         pbar.setValue(0)
         tlab.setText("⏱ 00:00")
 
-        log = LogWindow(tool_name)
+        # Create log window with tool name for detector
+        log = LogWindow(tool_name, tool_name=tool_name)
+        
+        # Set workflow mode on window
+        if in_workflow:
+            log.set_workflow_mode(True)
+        
         log.append(f"▶ {tool_name} started...\n")
         log.show()
 
@@ -623,12 +843,10 @@ class CleanTunePage(QWidget):
         sig.message.connect(log.append)
         sig.done.connect(lambda ok, msg: self._finish(ok, msg, tool_name, log, card_timer, tlab))
         
-        # Store log reference for results handler
         self._current_log = log
         sig.results.connect(self._on_scan_results)
 
         if tool_name == "SmartScan (VirusTotal)":
-            # Show folder selection dialog
             if QApplication.keyboardModifiers() & Qt.ShiftModifier:
                 folder = QFileDialog.getExistingDirectory(self, "Select Folder to Scan")
                 if not folder:
@@ -684,39 +902,83 @@ class CleanTunePage(QWidget):
         sig.done.emit(proc.returncode == 0, f"Finished with code {proc.returncode}")
 
     def _cleanup_worker(self, opts: dict, sig: WorkerSignals):
-        lines = [
-            'Write-Output "Starting Cleanup...";',
-            'Write-Output "Deleting TEMP files..."; Remove-Item "$env:TEMP\\*" -Recurse -Force -EA SilentlyContinue',
-            'Write-Output "Deleting Prefetch..."; Remove-Item "$env:SystemRoot\\Prefetch\\*" -Recurse -Force -EA SilentlyContinue',
-            'Write-Output "Deleting Update cache..."; Remove-Item "$env:SystemRoot\\SoftwareDistribution\\Download\\*" -Recurse -Force -EA SilentlyContinue'
-        ]
+        """Fixed cleanup worker with proper PowerShell command separation."""
+        
+        # Build commands as a list - each is a separate statement
+        commands = []
+        commands.append('$ProgressPreference="SilentlyContinue"')
+        commands.append('[Console]::OutputEncoding=[Text.Encoding]::UTF8')
+        commands.append('chcp 65001 > $null')
+        commands.append('Write-Output "Starting Cleanup..."')
+        
+        # TEMP files
+        commands.append('Write-Output "Deleting TEMP files..."')
+        commands.append('try { Remove-Item "$env:TEMP\\*" -Recurse -Force -EA SilentlyContinue } catch { }')
+        
+        # Prefetch
+        commands.append('Write-Output "Deleting Prefetch..."')
+        commands.append('try { Remove-Item "$env:SystemRoot\\Prefetch\\*" -Recurse -Force -EA SilentlyContinue } catch { }')
+        
+        # Windows Update cache
+        commands.append('Write-Output "Deleting Update cache..."')
+        commands.append('try { Remove-Item "$env:SystemRoot\\SoftwareDistribution\\Download\\*" -Recurse -Force -EA SilentlyContinue } catch { }')
+        
+        # Browser caches if selected
         if opts.get("chrome"):
-            lines.append('Write-Output "Clearing Chrome cache..."; Remove-Item "$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\Cache\\*" -Recurse -Force -EA SilentlyContinue')
+            commands.append('Write-Output "Clearing Chrome cache..."')
+            commands.append('try { Remove-Item "$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\Cache\\*" -Recurse -Force -EA SilentlyContinue } catch { }')
+        
         if opts.get("edge"):
-            lines.append('Write-Output "Clearing Edge cache..."; Remove-Item "$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\\Cache\\*" -Recurse -Force -EA SilentlyContinue')
+            commands.append('Write-Output "Clearing Edge cache..."')
+            commands.append('try { Remove-Item "$env:LOCALAPPDATA\\Microsoft\\Edge\\User Data\\Default\\Cache\\*" -Recurse -Force -EA SilentlyContinue } catch { }')
+        
         if opts.get("firefox"):
-            lines.append('Write-Output "Clearing Firefox cache...";')
-        lines.append('Write-Output "✅ Cleanup complete.";')
-
-        script = "$ProgressPreference='SilentlyContinue'; " + " ".join(lines)
+            commands.append('Write-Output "Clearing Firefox cache..."')
+            commands.append('try { Get-ChildItem "$env:APPDATA\\Mozilla\\Firefox\\Profiles" -Directory -EA SilentlyContinue | ForEach-Object { Remove-Item "$($_.FullName)\\cache2\\*" -Recurse -Force -EA SilentlyContinue } } catch { }')
+        
+        commands.append('Write-Output "✅ Cleanup complete."')
+        
+        # Join with semicolons - CRITICAL: This is the proper way
+        script = "; ".join(commands)
 
         si = subprocess.STARTUPINFO()
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-        proc = subprocess.Popen(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", startupinfo=si, creationflags=flags
-        )
-        self._active_proc = proc
+        try:
+            proc = subprocess.Popen(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE,
+                text=True, 
+                encoding="utf-8", 
+                startupinfo=si, 
+                creationflags=flags
+            )
+            self._active_proc = proc
 
-        for line in proc.stdout:
-            clean = re.sub(r"[^\x09\x0A\x0D\x20-\x7E]", "", line).strip()
-            if clean:
-                sig.message.emit(clean)
-        proc.wait()
-        sig.done.emit(proc.returncode == 0, "Cleanup finished")
+            # Read stdout
+            for line in proc.stdout:
+                clean = re.sub(r"[^\x09\x0A\x0D\x20-\x7E]", "", line).strip()
+                if clean:
+                    sig.message.emit(clean)
+            
+            # Wait for completion
+            proc.wait()
+            
+            # Check stderr
+            stderr_output = proc.stderr.read().strip()
+            
+            if proc.returncode == 0:
+                sig.done.emit(True, "Cleanup completed successfully")
+            else:
+                if stderr_output:
+                    sig.message.emit(f"\n⚠️ Warnings/Errors:\n{stderr_output}")
+                sig.done.emit(False, f"Cleanup finished with warnings (exit code {proc.returncode})")
+                
+        except Exception as e:
+            sig.message.emit(f"❌ Error: {e}")
+            sig.done.emit(False, f"Cleanup failed: {e}")
 
     def _smartscan_worker(self, folder: str, sig: WorkerSignals):
         if not os.path.isdir(folder):
@@ -829,16 +1091,27 @@ class CleanTunePage(QWidget):
         log.append(f"\n{msg}")
         log.append("-" * 40)
         
-        if ok:
+        # Force completion check based on final output
+        log.force_completion_check()
+        
+        # Update progress bar
+        if log._success:
             self.progress_bars[tool].setValue(100)
-            QMessageBox.information(self, "Complete", msg)
-        else:
-            QMessageBox.warning(self, "Failed", msg)
+        
+        # Check if in workflow mode
+        in_workflow = hasattr(self, '_in_workflow_mode') and self._in_workflow_mode
+        
+        if not in_workflow:
+            # Normal mode - show message boxes
+            if log._success:
+                QMessageBox.information(self, "Complete", log._message)
+            else:
+                QMessageBox.warning(self, "Issue Detected", log._message)
+        # In workflow mode, window will auto-close via detector
         
         self._fade_out_label(tlab)
         self._active_proc = None
         self._active_timer = None
-        self._active_log = None
 
     def _update_elapsed(self, label, start):
         secs = int((datetime.now() - start).total_seconds())

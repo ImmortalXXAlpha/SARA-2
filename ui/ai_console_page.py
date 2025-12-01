@@ -1,7 +1,6 @@
 # ui/ai_console_page.py
 """
-AI Console with thread-safe model switching.
-Uses Qt signals for all cross-thread communication.
+AI Console with conversation history and multi-tool workflow support.
 """
 
 from PySide6.QtWidgets import (
@@ -23,14 +22,13 @@ except ImportError:
 
 
 class AIWorker(QThread):
-    """Background thread for AI generation."""
+    """Background thread for AI generation with conversation history."""
     response_ready = Signal(str)
     
-    def __init__(self, ai, prompt, coordinator=None, max_new_tokens=256, temperature=0.7):
+    def __init__(self, ai, conversation_history, max_new_tokens=256, temperature=0.7):
         super().__init__()
         self.ai = ai
-        self.prompt = prompt
-        self.coordinator = coordinator
+        self.conversation_history = conversation_history  # List of messages
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self._stopped = False
@@ -53,23 +51,15 @@ class AIWorker(QThread):
             self.response_ready.emit("⚠️ Model is not ready.")
             return
             
-        # Check for tool commands first
-        if self.coordinator and not self._stopped:
-            try:
-                tool_response, _ = self.coordinator.process_message(self.prompt)
-                if tool_response:
-                    self.response_ready.emit(tool_response)
-                    return
-            except:
-                pass
-        
-        # AI generation
         if self._stopped:
             return
         
         try:
+            # Build prompt from conversation history
+            prompt = self._build_prompt()
+            
             result = self.ai.generate(
-                self.prompt, 
+                prompt, 
                 max_new_tokens=self.max_new_tokens, 
                 temperature=self.temperature
             )
@@ -78,6 +68,22 @@ class AIWorker(QThread):
         except Exception as e:
             if not self._stopped:
                 self.response_ready.emit(f"❌ Error: {e}")
+    
+    def _build_prompt(self):
+        """Build prompt from conversation history."""
+        # Format: User: message\nAssistant: response\n...
+        lines = []
+        for msg in self.conversation_history:
+            role = msg.get('role', 'user')
+            content = msg.get('content', '')
+            if role == 'user':
+                lines.append(f"User: {content}")
+            elif role == 'assistant':
+                lines.append(f"Assistant: {content}")
+        
+        # Add final instruction
+        full_prompt = "\n".join(lines)
+        return full_prompt
 
 
 class AIConsolePage(QWidget):
@@ -96,6 +102,9 @@ class AIConsolePage(QWidget):
         self.current_worker = None
         self.vram_timer = None
         
+        # Conversation history
+        self.conversation_history = []
+        
         # Settings
         self.settings_path = os.path.join(os.path.expanduser("~"), ".sara_settings.json")
         self.settings = self._load_settings()
@@ -105,9 +114,13 @@ class AIConsolePage(QWidget):
         if HAS_COORDINATOR and AIToolCoordinator:
             try:
                 self.coordinator = AIToolCoordinator(ai=ai, clean_tune_page=clean_tune_page)
-                self.coordinator.tool_requested.connect(self._on_tool_requested)
-            except:
-                pass
+                self.coordinator.tool_workflow_started.connect(self._on_workflow_started)
+                self.coordinator.tool_started.connect(self._on_tool_started)
+                self.coordinator.tool_completed.connect(self._on_tool_completed)
+                self.coordinator.workflow_completed.connect(self._on_workflow_completed)
+                self.coordinator.ai_message.connect(self._on_ai_message)
+            except Exception as e:
+                print(f"Coordinator init error: {e}")
         
         # Build UI
         self._init_ui()
@@ -151,7 +164,7 @@ class AIConsolePage(QWidget):
         header.addWidget(QLabel("Model:"))
         header.addWidget(self.model_selector)
 
-        self.status_label = QLabel("● Not Loaded")
+        self.status_label = QLabel("○ Not Loaded")
         self.status_label.setStyleSheet("color:#FFA726; font-weight:600;")
         header.addWidget(self.status_label)
         layout.addLayout(header)
@@ -199,15 +212,23 @@ class AIConsolePage(QWidget):
         self.stop_btn.clicked.connect(self.stop_generation)
         self.stop_btn.setEnabled(False)
         
+        self.clear_btn = QPushButton("Clear History")
+        self.clear_btn.clicked.connect(self._clear_history)
+        
         input_row.addWidget(self.input, 5)
         input_row.addWidget(self.send_btn, 1)
         input_row.addWidget(self.stop_btn, 1)
+        input_row.addWidget(self.clear_btn, 1)
         layout.addLayout(input_row)
 
         # Quick actions
         quick_row = QHBoxLayout()
         quick_row.addWidget(QLabel("Quick:"))
-        for label, cmd in [("SFC", "run sfc"), ("DISM", "run dism"), ("Cleanup", "cleanup")]:
+        for label, cmd in [
+            ("Maintenance", "run full maintenance"),
+            ("Quick Scan", "run virus scan"),
+            ("Cleanup", "cleanup temp files")
+        ]:
             btn = QPushButton(label)
             btn.clicked.connect(lambda c, x=cmd: self._quick_action(x))
             quick_row.addWidget(btn)
@@ -217,7 +238,8 @@ class AIConsolePage(QWidget):
         self.setLayout(layout)
         
         # Welcome
-        self._append_system("Welcome to SARA AI Console!")
+        self._append_system("Welcome to SARA AI Console! I can help you maintain your PC.")
+        self._append_system("Try: 'Can you run maintenance?' or 'Clean up my system'")
 
     def _wire_ai_callbacks(self):
         """Connect AI callbacks via signals for thread safety."""
@@ -326,6 +348,14 @@ class AIConsolePage(QWidget):
         self.input.setText(cmd)
         self.send_message()
 
+    def _clear_history(self):
+        """Clear conversation history."""
+        self.conversation_history = []
+        self.console.clear()
+        self._append_system("Conversation history cleared.")
+        if self.coordinator:
+            self.coordinator.reset()
+
     # ---- Send message ----
     def send_message(self):
         if not self.ai:
@@ -344,19 +374,82 @@ class AIConsolePage(QWidget):
             
         self._append_user(text)
         self.input.clear()
+        
+        # Add to conversation history
+        self.conversation_history.append({
+            'role': 'user',
+            'content': text
+        })
+        
+        # Check if coordinator can handle this (tool request)
+        if self.coordinator:
+            response = self.coordinator.process_message(text, self.conversation_history)
+            if response:
+                # Coordinator handled it
+                self._append_ai(response)
+                self.conversation_history.append({
+                    'role': 'assistant',
+                    'content': response
+                })
+                return
+        
+        # Otherwise, use AI to respond
         self._set_generating(True)
 
         max_tok = int(self.settings.get("max_tokens", 256))
         temp = float(self.settings.get("temperature", 0.7))
         
-        self.current_worker = AIWorker(self.ai, text, self.coordinator, max_tok, temp)
+        self.current_worker = AIWorker(self.ai, self.conversation_history, max_tok, temp)
         self.current_worker.response_ready.connect(self._on_response)
         self.current_worker.start()
 
     @Slot(str)
     def _on_response(self, resp):
         self._append_ai(resp)
+        # Add to history
+        self.conversation_history.append({
+            'role': 'assistant',
+            'content': resp
+        })
         self._set_generating(False)
+
+    @Slot(str)
+    def _on_ai_message(self, message):
+        """Receive messages from coordinator."""
+        self._append_ai(message)
+        self.conversation_history.append({
+            'role': 'assistant',
+            'content': message
+        })
+
+    # ---- Workflow callbacks ----
+    @Slot(list)
+    def _on_workflow_started(self, tools):
+        """Called when a multi-tool workflow starts."""
+        tool_names = ", ".join(tools)
+        self._append_system(f"🔧 Starting workflow: {tool_names}")
+
+    @Slot(str)
+    def _on_tool_started(self, tool_name):
+        """Called when a tool starts."""
+        self._append_system(f"▶️ Running {tool_name}...")
+
+    @Slot(str, bool, str)
+    def _on_tool_completed(self, tool_name, success, message):
+        """Called when a tool completes."""
+        if success:
+            self._append_system(f"✅ {tool_name} completed: {message}")
+        else:
+            self._append_system(f"❌ {tool_name} failed: {message}")
+
+    @Slot(str)
+    def _on_workflow_completed(self, summary):
+        """Called when entire workflow completes."""
+        self._append_ai(summary)
+        self.conversation_history.append({
+            'role': 'assistant',
+            'content': summary
+        })
 
     def stop_generation(self):
         if self.current_worker and self.current_worker.isRunning():
@@ -411,10 +504,5 @@ class AIConsolePage(QWidget):
         if loading:
             self.progress.show()
             self.progress.setValue(10)
-            self.status_label.setText("● Loading...")
+            self.status_label.setText("○ Loading...")
             self.status_label.setStyleSheet("color:#FFA726; font-weight:600;")
-
-    @Slot(str, dict)
-    def _on_tool_requested(self, tool_name, options):
-        if self.clean_tune_page and hasattr(self.clean_tune_page, '_start_tool'):
-            QTimer.singleShot(0, lambda: self.clean_tune_page._start_tool(tool_name))

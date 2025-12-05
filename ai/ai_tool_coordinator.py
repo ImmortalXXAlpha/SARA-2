@@ -315,19 +315,33 @@ class AIToolCoordinator(QObject):
         if not self.current_workflow:
             return
         
-        # Disable workflow mode
-        if self.clean_tune_page:
-            self.clean_tune_page._in_workflow_mode = False
-        
-        # Build summary report
-        summary = self._build_workflow_summary(self.current_workflow)
-        
-        # Emit signal
-        self.workflow_completed.emit(summary)
-        
-        # Clear workflow
-        self.current_workflow = None
-        self._tool_windows = {}
+        try:
+            # Disable workflow mode
+            if self.clean_tune_page:
+                self.clean_tune_page._in_workflow_mode = False
+            
+            # Build summary (don't store reference)
+            summary = self._build_workflow_summary(self.current_workflow)
+            
+            # Clear ALL references immediately
+            self.current_workflow = None
+            self._tool_windows = {}
+            
+            # Emit in try-catch (this can cause issues)
+            try:
+                self.workflow_completed.emit(summary)
+            except RuntimeError as e:
+                # Signal might be disconnected, that's okay
+                print(f"Workflow signal error (safe to ignore): {e}")
+                
+        except Exception as e:
+            print(f"Error in workflow completion: {e}")
+            # Still clean up even if there's an error
+            self.current_workflow = None
+            self._tool_windows = {}
+            if self.clean_tune_page:
+                self.clean_tune_page._in_workflow_mode = False
+
 
     def _build_workflow_summary(self, workflow: ToolWorkflow) -> str:
         """Build a summary report with actual results."""

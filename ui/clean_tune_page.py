@@ -36,13 +36,15 @@ class LogWindow(QDialog):
         self.setWindowTitle(title)
         self.setMinimumSize(800, 520)
         
-        # Track result status
         self._success = False
         self._message = ""
         self._auto_close = False
         self._tool_name = tool_name
+        self._workflow_mode = False
+        self._is_closing = False  # NEW: Prevent double-close
         
         # Completion detector
+        from ui.clean_tune_page import ToolCompletionDetector
         self._detector = ToolCompletionDetector(tool_name) if tool_name else None
 
         v = QVBoxLayout(self)
@@ -130,16 +132,43 @@ class LogWindow(QDialog):
                 self.set_result(self._detector.success, self._detector.message)
 
     def closeEvent(self, e):
-        self.stop_timer()
+        """Handle window close with proper cleanup."""
+        if hasattr(self, '_is_closing') and self._is_closing:
+            e.accept()
+            return
         
-        # If no result set yet (user closed manually), assume cancelled
+        self._is_closing = True
+        
+        # Stop timer
+        if hasattr(self, '_timer') and self._timer:
+            self._timer.stop()
+            self._timer = None
+        
+        if hasattr(self, '_auto_close_timer') and self._auto_close_timer:
+            self._auto_close_timer.stop()
+            self._auto_close_timer = None
+        
+        # If no result set yet, mark as cancelled
         if not self._message:
             self._success = False
             self._message = "Cancelled by user"
         
-        self.finished.emit(self._success, self._message)
-        self.closed.emit()
-        super().closeEvent(e)
+        # Emit signals in try-catch
+        try:
+            self.finished.emit(self._success, self._message)
+        except RuntimeError:
+            pass  # Signal disconnected, ignore
+        
+        try:
+            self.closed.emit()
+        except RuntimeError:
+            pass  # Signal disconnected, ignore
+        
+        # Clear detector reference
+        if hasattr(self, '_detector'):
+            self._detector = None
+        
+        e.accept()
 
 class ToolCompletionDetector:
     """
@@ -679,7 +708,9 @@ class CleanTunePage(QWidget):
         self._active_proc = None
         self._active_timer = None
         self._active_log = None
-        self._current_log = None  # For scan results handler
+        self._current_log = None
+        self._in_workflow_mode = False
+        self._active_threads = []  # NEW: Track active threads
         self._init_ui()
 
     def set_ai(self, ai):
@@ -699,6 +730,8 @@ class CleanTunePage(QWidget):
 
         grid = QGridLayout()
         grid.setSpacing(25)
+
+    
 
         self.tools = {
             "System File Checker (SFC)": {
@@ -738,6 +771,17 @@ class CleanTunePage(QWidget):
 
         root.addLayout(grid)
         root.addStretch()
+
+    def _cleanup_thread(self, thread):
+        """Safely cleanup a finished thread."""
+        try:
+            if thread and thread.isRunning():
+                thread.quit()
+                thread.wait(1000)  # Wait up to 1 second
+            if thread in self._active_threads:
+                self._active_threads.remove(thread)
+        except:
+            pass
 
     def _make_card(self, title, desc, icon=""):
         card = QFrame()
@@ -857,7 +901,9 @@ class CleanTunePage(QWidget):
                 folder = os.path.join(os.path.expanduser("~"), "Downloads")
             
             log.append(f"📂 Scanning folder: {folder}\n")
-            threading.Thread(target=self._smartscan_worker, args=(folder, sig), daemon=True).start()
+            thread = threading.Thread(target=self._smartscan_worker, args=(folder, sig), daemon=True)
+            self._active_threads.append(thread)  # Track it
+            thread.start()
 
         elif tool_name == "Cleanup Temp Files":
             dlg = AdvancedCleanupDialog(self)
@@ -866,11 +912,15 @@ class CleanTunePage(QWidget):
                 card_timer.stop()
                 return
             opts = dlg.selections()
-            threading.Thread(target=self._cleanup_worker, args=(opts, sig), daemon=True).start()
+            thread = threading.Thread(target=self._cleanup_worker, args=(opts, sig), daemon=True)
+            self._active_threads.append(thread)  # Track it
+            thread.start()
 
         else:
             ps_cmd = self.tools[tool_name]["ps"]
-            threading.Thread(target=self._powershell_worker, args=(ps_cmd, sig), daemon=True).start()
+            thread = threading.Thread(target=self._powershell_worker, args=(ps_cmd, sig), daemon=True)
+            self._active_threads.append(thread)  # Track it
+            thread.start()
 
     def _powershell_worker(self, inner_cmd: str, sig: WorkerSignals):
         script = (
@@ -1091,11 +1141,16 @@ class CleanTunePage(QWidget):
         log.append(f"\n{msg}")
         log.append("-" * 40)
         
-        # Force completion check based on final output
-        log.force_completion_check()
+        # Force completion check
+        if hasattr(log, 'force_completion_check'):
+            log.force_completion_check()
+        
+        # Set result
+        if hasattr(log, 'set_result'):
+            log.set_result(ok, msg)
         
         # Update progress bar
-        if log._success:
+        if ok:
             self.progress_bars[tool].setValue(100)
         
         # Check if in workflow mode
@@ -1103,15 +1158,24 @@ class CleanTunePage(QWidget):
         
         if not in_workflow:
             # Normal mode - show message boxes
-            if log._success:
-                QMessageBox.information(self, "Complete", log._message)
+            if ok:
+                QMessageBox.information(self, "Complete", msg)
             else:
-                QMessageBox.warning(self, "Issue Detected", log._message)
+                QMessageBox.warning(self, "Issue Detected", msg)
         # In workflow mode, window will auto-close via detector
         
         self._fade_out_label(tlab)
         self._active_proc = None
         self._active_timer = None
+        
+        # NEW: Clean up any finished threads
+        self._cleanup_finished_threads()
+
+    def _cleanup_finished_threads(self):
+        """Clean up threads that have finished."""
+        for thread in list(self._active_threads):
+            if not thread.is_alive():
+                self._active_threads.remove(thread)
 
     def _update_elapsed(self, label, start):
         secs = int((datetime.now() - start).total_seconds())
@@ -1145,3 +1209,36 @@ class CleanTunePage(QWidget):
             return None
         r.raise_for_status()
         return None
+
+    def closeEvent(self, event):
+        """Clean shutdown when page is closed."""
+        # Stop all active processes
+        if self._active_proc and self._active_proc.poll() is None:
+            try:
+                self._active_proc.terminate()
+                self._active_proc.wait(timeout=2)
+            except:
+                try:
+                    self._active_proc.kill()
+                except:
+                    pass
+        
+        # Stop timers
+        if self._active_timer and self._active_timer.isActive():
+            self._active_timer.stop()
+        
+        # Close active log window
+        if self._active_log:
+            try:
+                self._active_log.close()
+            except:
+                pass
+        
+        # Wait for threads to finish (with timeout)
+        for thread in list(self._active_threads):
+            if thread.is_alive():
+                # Threads are daemon, but give them a moment to cleanup
+                thread.join(timeout=0.5)
+        
+        self._active_threads.clear()
+        event.accept()

@@ -275,7 +275,26 @@ class MainWindow(QWidget):
             self.ai.switch_model(default_model)
 
     def closeEvent(self, event):
-        """Clean shutdown of AI backend."""
+        """Clean shutdown of AI backend and all pages."""
+        print("🛑 Shutting down SARA...")
+        
+        # Get all page instances that might have threads
+        for page_name, page in self._page_instances.items():
+            if hasattr(page, 'closeEvent'):
+                try:
+                    # Trigger page cleanup
+                    page.close()
+                except Exception as e:
+                    print(f"Error closing {page_name}: {e}")
+        
+        # Shutdown AI
         if self.ai:
-            self.ai.shutdown()
-        event.accept()
+            try:
+                print("🤖 Shutting down AI model...")
+                self.ai.shutdown()
+            except Exception as e:
+                print(f"AI shutdown error: {e}")
+        
+        # Small delay to let threads finish
+        QTimer.singleShot(100, lambda: event.accept())
+        print("✅ SARA shutdown complete")

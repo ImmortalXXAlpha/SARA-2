@@ -8,6 +8,8 @@ import sys
 import os
 import ctypes
 import traceback
+import threading
+from datetime import datetime
 from PySide6.QtWidgets import QApplication
 from ui.main_window import MainWindow
 
@@ -27,6 +29,44 @@ def run_as_admin():
     )
     sys.exit(0)
 
+def exception_hook(exctype, value, tb):
+    """Catch all unhandled exceptions."""
+    print(f"\n{'='*60}")
+    print(f"⚠️ UNHANDLED EXCEPTION at {datetime.now()}")
+    print(f"{'='*60}")
+    print(f"Type: {exctype.__name__}")
+    print(f"Value: {value}")
+    print(f"\nTraceback:")
+    traceback.print_tb(tb)
+    print(f"{'='*60}\n")
+    
+    # Don't exit immediately - let Qt cleanup
+    try:
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app:
+            print("Attempting graceful shutdown...")
+            app.quit()
+    except:
+        pass
+
+# Thread exception handler
+def thread_exception_hook(args):
+    """Catch exceptions in threads."""
+    print(f"\n{'='*60}")
+    print(f"⚠️ THREAD EXCEPTION at {datetime.now()}")
+    print(f"{'='*60}")
+    print(f"Thread: {args.thread}")
+    print(f"Type: {args.exc_type.__name__}")
+    print(f"Value: {args.exc_value}")
+    if args.exc_traceback:
+        print(f"\nTraceback:")
+        traceback.print_tb(args.exc_traceback)
+    print(f"{'='*60}\n")
+
+# Install handlers
+sys.excepthook = exception_hook
+threading.excepthook = thread_exception_hook
 
 # ------------------------------
 # Inline Stylesheet
@@ -173,7 +213,10 @@ QSlider::handle:horizontal:hover {
 
 def main():
     print("🚀 Starting SARA (AI Repair Agent)...")
-    print(f"🔐 Admin privileges: {is_admin()}")
+    print(f"📍 Admin privileges: {is_admin()}")
+    
+    # Track active threads
+    print(f"📊 Active threads at start: {threading.active_count()}")
     
     try:
         app = QApplication(sys.argv)
@@ -186,11 +229,45 @@ def main():
         window = MainWindow()
         window.show()
         print("✅ MainWindow created and visible.")
-        return app.exec()
+        
+        # Monitor threads periodically
+        def print_thread_count():
+            count = threading.active_count()
+            if count > 5:  # Alert if too many threads
+                print(f"⚠️ Warning: {count} threads active")
+                for t in threading.enumerate():
+                    print(f"  - {t.name}: {t.is_alive()}")
+        
+        # Check every 10 seconds
+        from PySide6.QtCore import QTimer
+        monitor = QTimer()
+        monitor.timeout.connect(print_thread_count)
+        monitor.start(10000)
+        
+        print(f"📊 Entering event loop with {threading.active_count()} threads")
+        result = app.exec()
+        
+        print(f"\n📊 App exited with code {result}")
+        print(f"📊 Threads at exit: {threading.active_count()}")
+        for t in threading.enumerate():
+            print(f"  - {t.name}: alive={t.is_alive()}, daemon={t.daemon}")
+        
+        return result
+        
     except Exception as e:
-        print("❌ Error:", e)
+        print(f"❌ Fatal Error: {e}")
         traceback.print_exc()
         return 1
+    finally:
+        print("🛑 Cleanup phase...")
+        # Force thread cleanup
+        for t in threading.enumerate():
+            if t != threading.main_thread() and t.is_alive() and not t.daemon:
+                print(f"⚠️ Non-daemon thread still alive: {t.name}")
+                try:
+                    t.join(timeout=1.0)
+                except:
+                    pass
 
 
 if __name__ == "__main__":
@@ -203,4 +280,9 @@ if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
     
-    sys.exit(main())
+    exit_code = main()
+    print(f"\n{'='*60}")
+    print(f"🏁 SARA exiting with code {exit_code}")
+    print(f"📊 Final thread count: {threading.active_count()}")
+    print(f"{'='*60}\n")
+    sys.exit(exit_code)

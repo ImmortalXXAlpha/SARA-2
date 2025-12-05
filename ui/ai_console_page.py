@@ -28,43 +28,54 @@ class AIWorker(QThread):
     def __init__(self, ai, conversation_history, max_new_tokens=256, temperature=0.7):
         super().__init__()
         self.ai = ai
-        self.conversation_history = conversation_history  # List of messages
+        self.conversation_history = conversation_history
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self._stopped = False
+        self.setTerminationEnabled(True)  # Allow thread termination
 
     def stop(self):
         self._stopped = True
+        # Give thread a moment to finish current operation
+        if self.isRunning():
+            self.quit()
+            self.wait(500)  # Wait up to 500ms
 
     def run(self):
-        if self._stopped:
-            return
-        
-        # Safety checks
-        if not self.ai:
-            self.response_ready.emit("⚠️ AI backend not connected.")
-            return
-        if getattr(self.ai, 'is_loading', False):
-            self.response_ready.emit("⚠️ Model is loading. Please wait...")
-            return
-        if not getattr(self.ai, 'is_loaded', False):
-            self.response_ready.emit("⚠️ Model is not ready.")
-            return
-            
-        if self._stopped:
-            return
-        
         try:
+            if self._stopped:
+                return
+            
+            # Safety checks
+            if not self.ai:
+                self.response_ready.emit("⚠️ AI backend not connected.")
+                return
+            if getattr(self.ai, 'is_loading', False):
+                self.response_ready.emit("⚠️ Model is loading. Please wait...")
+                return
+            if not getattr(self.ai, 'is_loaded', False):
+                self.response_ready.emit("⚠️ Model is not ready.")
+                return
+                
+            if self._stopped:
+                return
+            
             # Build prompt from conversation history
             prompt = self._build_prompt()
+            
+            # Check if stopped before generation
+            if self._stopped:
+                return
             
             result = self.ai.generate(
                 prompt, 
                 max_new_tokens=self.max_new_tokens, 
                 temperature=self.temperature
             )
+            
             if not self._stopped:
                 self.response_ready.emit(result)
+                
         except Exception as e:
             if not self._stopped:
                 self.response_ready.emit(f"❌ Error: {e}")
@@ -101,6 +112,7 @@ class AIConsolePage(QWidget):
         self.clean_tune_page = clean_tune_page
         self.current_worker = None
         self.vram_timer = None
+        self._worker_history = []
         
         # Conversation history
         self.conversation_history = []
@@ -399,9 +411,25 @@ class AIConsolePage(QWidget):
         max_tok = int(self.settings.get("max_tokens", 256))
         temp = float(self.settings.get("temperature", 0.7))
         
+        if self.current_worker and self.current_worker.isRunning():
+            self.current_worker.stop()
+            self.current_worker.wait(500)
+        
         self.current_worker = AIWorker(self.ai, self.conversation_history, max_tok, temp)
         self.current_worker.response_ready.connect(self._on_response)
+        self.current_worker.finished.connect(lambda: self._cleanup_worker(self.current_worker))
+        self._worker_history.append(self.current_worker)
         self.current_worker.start()
+
+    def _cleanup_worker(self, worker):
+        """Clean up finished worker."""
+        try:
+            if worker in self._worker_history:
+                self._worker_history.remove(worker)
+            if worker == self.current_worker:
+                self.current_worker = None
+        except:
+            pass
 
     @Slot(str)
     def _on_response(self, resp):
@@ -415,7 +443,7 @@ class AIConsolePage(QWidget):
 
     @Slot(str)
     def _on_ai_message(self, message):
-        """Receive messages from coordinator."""
+        """Receive messages from coordinator - DON'T create new worker."""
         self._append_ai(message)
         self.conversation_history.append({
             'role': 'assistant',
@@ -450,6 +478,7 @@ class AIConsolePage(QWidget):
             'role': 'assistant',
             'content': summary
         })
+        # DON'T create worker or call send_message
 
     def stop_generation(self):
         if self.current_worker and self.current_worker.isRunning():
@@ -506,3 +535,21 @@ class AIConsolePage(QWidget):
             self.progress.setValue(10)
             self.status_label.setText("○ Loading...")
             self.status_label.setStyleSheet("color:#FFA726; font-weight:600;")
+
+    def closeEvent(self, event):
+        """Clean shutdown of console page."""
+        # Stop current worker
+        if self.current_worker:
+            self.current_worker.stop()
+            self.current_worker.wait(1000)
+        
+        # Stop all workers in history
+        for worker in list(self._worker_history):
+            if worker.isRunning():
+                worker.stop()
+                worker.wait(500)
+        
+        self._worker_history.clear()
+        self.current_worker = None
+        
+        event.accept()

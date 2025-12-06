@@ -1,14 +1,16 @@
 # ui/dashboard_page.py
 """
-Enhanced Dashboard with system overview, quick stats, and quick actions.
+Improved Dashboard - System overview with useful information display.
 """
 
 import psutil
 import platform
+import os
 from datetime import datetime
+from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QFrame, QHBoxLayout, 
-    QGridLayout, QPushButton, QProgressBar
+    QGridLayout, QPushButton, QProgressBar, QScrollArea
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap
@@ -30,7 +32,45 @@ class DashboardPage(QWidget):
         self._update_stats()
 
     def _init_ui(self):
-        layout = QVBoxLayout()
+        # Main layout for the page
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # Create scroll area
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background: transparent;
+            }
+            QScrollBar:vertical {
+                background: #1b2230;
+                width: 12px;
+                border-radius: 6px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #3d4a6b;
+                border-radius: 6px;
+                min-height: 30px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #6e8bff;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+            }
+            QScrollBar:horizontal {
+                height: 0;
+            }
+        """)
+        
+        # Content widget inside scroll area
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
         layout.setContentsMargins(40, 40, 40, 40)
         layout.setSpacing(25)
 
@@ -40,18 +80,14 @@ class DashboardPage(QWidget):
         # SARA Logo
         logo_label = QLabel()
         try:
-            # Try to load SARA logo (adjust path as needed)
             pixmap = QPixmap("assets/SARA.png")
             if not pixmap.isNull():
-                # Scale to reasonable size while maintaining aspect ratio
                 scaled_pixmap = pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 logo_label.setPixmap(scaled_pixmap)
             else:
-                # Fallback to emoji if image not found
                 logo_label.setText("🤖")
                 logo_label.setStyleSheet("font-size: 60px;")
         except:
-            # Fallback to emoji
             logo_label.setText("🤖")
             logo_label.setStyleSheet("font-size: 60px;")
         
@@ -72,10 +108,6 @@ class DashboardPage(QWidget):
         
         header_layout.addLayout(title_section)
         header_layout.addStretch()
-        
-        # AI Status indicator
-        self.ai_status_indicator = self._create_status_badge()
-        header_layout.addWidget(self.ai_status_indicator)
         
         layout.addLayout(header_layout)
 
@@ -100,42 +132,29 @@ class DashboardPage(QWidget):
         
         layout.addLayout(health_grid)
 
-        # ===== QUICK ACTIONS =====
-        actions_label = QLabel("Quick Actions")
-        actions_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #fff; margin-top: 20px;")
-        layout.addWidget(actions_label)
+        # ===== AI STATUS =====
+        ai_label = QLabel("AI Status")
+        ai_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #fff; margin-top: 20px;")
+        layout.addWidget(ai_label)
         
-        actions_grid = QGridLayout()
-        actions_grid.setSpacing(15)
+        self.ai_status_card = self._create_ai_status_card()
+        layout.addWidget(self.ai_status_card)
+
+        # ===== RECENT ACTIVITY =====
+        activity_label = QLabel("Recent Activity")
+        activity_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #fff; margin-top: 20px;")
+        layout.addWidget(activity_label)
         
-        # Quick action buttons
-        maintenance_btn = self._create_action_button(
-            "🔧 Run Maintenance", 
-            "Perform full system maintenance",
-            self._quick_maintenance
-        )
-        scan_btn = self._create_action_button(
-            "🛡️ Virus Scan", 
-            "Check for malware and threats",
-            self._quick_scan
-        )
-        cleanup_btn = self._create_action_button(
-            "🧹 Clean Up", 
-            "Remove temporary files",
-            self._quick_cleanup
-        )
-        report_btn = self._create_action_button(
-            "📊 System Report", 
-            "View system health analysis",
-            self._quick_report
-        )
+        self.activity_card = self._create_activity_card()
+        layout.addWidget(self.activity_card)
+
+        # ===== LAST REPORT =====
+        report_label = QLabel("Latest System Report")
+        report_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #fff; margin-top: 20px;")
+        layout.addWidget(report_label)
         
-        actions_grid.addWidget(maintenance_btn, 0, 0)
-        actions_grid.addWidget(scan_btn, 0, 1)
-        actions_grid.addWidget(cleanup_btn, 1, 0)
-        actions_grid.addWidget(report_btn, 1, 1)
-        
-        layout.addLayout(actions_grid)
+        self.last_report_card = self._create_last_report_card()
+        layout.addWidget(self.last_report_card)
 
         # ===== SYSTEM INFORMATION =====
         info_label = QLabel("System Information")
@@ -146,36 +165,12 @@ class DashboardPage(QWidget):
         layout.addWidget(self.system_info_card)
 
         layout.addStretch()
-        self.setLayout(layout)
-
-    def _create_status_badge(self):
-        """Create AI status indicator badge."""
-        badge = QFrame()
-        badge.setFixedSize(150, 40)
-        badge.setStyleSheet("""
-            QFrame {
-                background: #1b2230;
-                border: 1px solid #2b3548;
-                border-radius: 20px;
-                padding: 5px 15px;
-            }
-        """)
         
-        badge_layout = QHBoxLayout(badge)
-        badge_layout.setContentsMargins(10, 5, 10, 5)
-        badge_layout.setSpacing(8)
+        # Set content widget to scroll area
+        scroll_area.setWidget(content_widget)
         
-        self.status_dot = QLabel("●")
-        self.status_dot.setStyleSheet("color: #FFA726; font-size: 18px;")
-        
-        self.status_text = QLabel("Loading")
-        self.status_text.setStyleSheet("color: #e8eef6; font-weight: 600; font-size: 13px;")
-        
-        badge_layout.addWidget(self.status_dot)
-        badge_layout.addWidget(self.status_text)
-        badge_layout.addStretch()
-        
-        return badge
+        # Add scroll area to main layout
+        main_layout.addWidget(scroll_area)
 
     def _create_stat_card(self, title, value, subtitle):
         """Create a stat card widget."""
@@ -238,46 +233,143 @@ class DashboardPage(QWidget):
         
         return card
 
-    def _create_action_button(self, title, description, callback):
-        """Create a quick action button."""
-        btn = QPushButton()
-        btn.setCursor(Qt.PointingHandCursor)
-        btn.clicked.connect(callback)
-        
-        btn.setStyleSheet("""
-            QPushButton {
+    def _create_ai_status_card(self):
+        """Create AI status card."""
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
                 background: #1b2230;
-                border: 2px solid #2b3548;
                 border-radius: 12px;
+                border: 1px solid #2b3548;
                 padding: 20px;
-                text-align: left;
-            }
-            QPushButton:hover {
-                background: #233048;
-                border-color: #6e8bff;
-            }
-            QPushButton:pressed {
-                background: #151c29;
             }
         """)
         
-        btn_layout = QVBoxLayout()
-        btn_layout.setSpacing(5)
+        layout = QHBoxLayout(card)
+        layout.setSpacing(20)
         
-        title_label = QLabel(title)
-        title_label.setStyleSheet("font-size: 16px; font-weight: 600; color: #ffffff;")
+        # Status indicator
+        self.ai_status_dot = QLabel("●")
+        self.ai_status_dot.setStyleSheet("color: #FFA726; font-size: 36px;")
+        layout.addWidget(self.ai_status_dot)
         
-        desc_label = QLabel(description)
-        desc_label.setStyleSheet("font-size: 13px; color: #9eb3ff;")
-        desc_label.setWordWrap(True)
+        # Status info
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(5)
         
-        btn_layout.addWidget(title_label)
-        btn_layout.addWidget(desc_label)
+        self.ai_status_text = QLabel("AI Model Loading...")
+        self.ai_status_text.setStyleSheet("font-size: 16px; font-weight: 600; color: #ffffff;")
         
-        btn.setLayout(btn_layout)
-        btn.setFixedHeight(90)
+        self.ai_model_text = QLabel("Model: Loading...")
+        self.ai_model_text.setStyleSheet("font-size: 13px; color: #9eb3ff;")
         
-        return btn
+        self.ai_speed_text = QLabel("Speed: --")
+        self.ai_speed_text.setStyleSheet("font-size: 13px; color: #9eb3ff;")
+        
+        info_layout.addWidget(self.ai_status_text)
+        info_layout.addWidget(self.ai_model_text)
+        info_layout.addWidget(self.ai_speed_text)
+        
+        layout.addLayout(info_layout)
+        layout.addStretch()
+        
+        return card
+
+    def _create_activity_card(self):
+        """Create recent activity card."""
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background: #1b2230;
+                border-radius: 12px;
+                border: 1px solid #2b3548;
+                padding: 20px;
+            }
+        """)
+        
+        layout = QVBoxLayout(card)
+        layout.setSpacing(10)
+        
+        self.activity_label = QLabel("No recent maintenance activity")
+        self.activity_label.setStyleSheet("color: #7f8c8d; font-size: 14px;")
+        self.activity_label.setWordWrap(True)
+        
+        layout.addWidget(self.activity_label)
+        
+        return card
+
+    def _create_last_report_card(self):
+        """Create last report summary card."""
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background: #1b2230;
+                border-radius: 12px;
+                border: 1px solid #2b3548;
+                padding: 20px;
+            }
+        """)
+        
+        layout = QVBoxLayout(card)
+        layout.setSpacing(15)
+        
+        # Check for latest report
+        reports_dir = Path(__file__).resolve().parent.parent / "reports"
+        
+        if reports_dir.exists():
+            # Get most recent report file
+            reports = list(reports_dir.glob("*.txt")) + list(reports_dir.glob("*.pdf"))
+            if reports:
+                latest_report = max(reports, key=os.path.getmtime)
+                file_time = datetime.fromtimestamp(latest_report.stat().st_mtime)
+                time_ago = self._time_ago(file_time)
+                
+                # Report found
+                header = QLabel(f"📄 {latest_report.stem}")
+                header.setStyleSheet("font-size: 15px; font-weight: 600; color: #ffffff;")
+                
+                time_label = QLabel(f"Generated {time_ago}")
+                time_label.setStyleSheet("font-size: 13px; color: #9eb3ff;")
+                
+                # View button
+                view_btn = QPushButton("📊 View Reports")
+                view_btn.setCursor(Qt.PointingHandCursor)
+                view_btn.setStyleSheet("""
+                    QPushButton {
+                        background: #6e8bff;
+                        color: white;
+                        border: none;
+                        border-radius: 6px;
+                        padding: 10px 20px;
+                        font-weight: 600;
+                    }
+                    QPushButton:hover {
+                        background: #869eff;
+                    }
+                """)
+                view_btn.clicked.connect(self._open_reports_page)
+                
+                layout.addWidget(header)
+                layout.addWidget(time_label)
+                layout.addWidget(view_btn)
+            else:
+                # No reports yet
+                no_reports = QLabel("📭 No reports generated yet")
+                no_reports.setStyleSheet("color: #7f8c8d; font-size: 14px;")
+                
+                hint = QLabel("Generate a report from the Reports page to see system health analysis")
+                hint.setStyleSheet("color: #7f8c8d; font-size: 12px;")
+                hint.setWordWrap(True)
+                
+                layout.addWidget(no_reports)
+                layout.addWidget(hint)
+        else:
+            # Reports directory doesn't exist
+            no_reports = QLabel("📭 No reports directory found")
+            no_reports.setStyleSheet("color: #7f8c8d; font-size: 14px;")
+            layout.addWidget(no_reports)
+        
+        return card
 
     def _create_system_info_card(self):
         """Create system information card."""
@@ -385,14 +477,29 @@ class DashboardPage(QWidget):
             # Update AI status
             if self.ai:
                 if getattr(self.ai, 'is_loaded', False):
-                    self.status_dot.setStyleSheet("color: #4CAF50; font-size: 18px;")
-                    self.status_text.setText("AI Ready")
+                    self.ai_status_dot.setStyleSheet("color: #4CAF50; font-size: 36px;")
+                    self.ai_status_text.setText("AI Ready")
+                    
+                    model_name = getattr(self.ai, 'model_key', 'Unknown')
+                    self.ai_model_text.setText(f"Model: {model_name}")
+                    
+                    # Get benchmark if available
+                    if hasattr(self.ai, '_last_benchmark'):
+                        speed = getattr(self.ai, '_last_benchmark', 0)
+                        self.ai_speed_text.setText(f"Speed: {speed:.1f} tokens/sec")
+                    else:
+                        self.ai_speed_text.setText("Speed: Ready")
+                        
                 elif getattr(self.ai, 'is_loading', False):
-                    self.status_dot.setStyleSheet("color: #FFA726; font-size: 18px;")
-                    self.status_text.setText("Loading...")
+                    self.ai_status_dot.setStyleSheet("color: #FFA726; font-size: 36px;")
+                    self.ai_status_text.setText("Loading Model...")
+                    self.ai_model_text.setText("Please wait...")
+                    self.ai_speed_text.setText("")
                 else:
-                    self.status_dot.setStyleSheet("color: #e74c3c; font-size: 18px;")
-                    self.status_text.setText("Not Loaded")
+                    self.ai_status_dot.setStyleSheet("color: #e74c3c; font-size: 36px;")
+                    self.ai_status_text.setText("AI Not Loaded")
+                    self.ai_model_text.setText("Go to AI Console to load")
+                    self.ai_speed_text.setText("")
             
         except Exception as e:
             print(f"Dashboard update error: {e}")
@@ -406,41 +513,26 @@ class DashboardPage(QWidget):
         else:
             return "High"
 
-    # ===== QUICK ACTION CALLBACKS =====
-    
-    def _quick_maintenance(self):
-        """Navigate to AI Console and start maintenance."""
-        if self.main_window:
-            # Switch to AI Console
-            self.main_window._switch_page("AI Console")
-            
-            # Wait a moment for page to load, then send message
-            QTimer.singleShot(200, lambda: self._send_ai_message("run maintenance"))
+    def _time_ago(self, dt):
+        """Get human-readable time ago string."""
+        now = datetime.now()
+        diff = now - dt
+        
+        seconds = diff.total_seconds()
+        
+        if seconds < 60:
+            return "just now"
+        elif seconds < 3600:
+            minutes = int(seconds / 60)
+            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+        elif seconds < 86400:
+            hours = int(seconds / 3600)
+            return f"{hours} hour{'s' if hours != 1 else ''} ago"
+        else:
+            days = int(seconds / 86400)
+            return f"{days} day{'s' if days != 1 else ''} ago"
 
-    def _quick_scan(self):
-        """Navigate to AI Console and start virus scan."""
-        if self.main_window:
-            self.main_window._switch_page("AI Console")
-            QTimer.singleShot(200, lambda: self._send_ai_message("run virus scan"))
-
-    def _quick_cleanup(self):
-        """Navigate to AI Console and start cleanup."""
-        if self.main_window:
-            self.main_window._switch_page("AI Console")
-            QTimer.singleShot(200, lambda: self._send_ai_message("cleanup temp files"))
-
-    def _quick_report(self):
+    def _open_reports_page(self):
         """Navigate to Reports page."""
         if self.main_window:
             self.main_window._switch_page("Reports")
-
-    def _send_ai_message(self, message):
-        """Send a message to AI Console."""
-        try:
-            # Get the AI Console page
-            ai_console = self.main_window._page_instances.get("AI Console")
-            if ai_console and hasattr(ai_console, 'input'):
-                ai_console.input.setText(message)
-                ai_console.send_message()
-        except Exception as e:
-            print(f"Error sending AI message: {e}")

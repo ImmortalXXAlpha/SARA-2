@@ -31,7 +31,7 @@ class MainWindow(QWidget):
         self.current_theme = "dark"
 
         # Create the central NovaAI instance
-        self.ai = NovaAI(model_key="phi3-mini")
+        self.ai = NovaAI(model_key="qwen2.5-1.5b")
 
         # Lazy page loading - pages dict stores either class or instance
         self._page_classes: Dict[str, type] = {}
@@ -125,8 +125,8 @@ class MainWindow(QWidget):
         }
         
         # Create critical pages immediately
-        self._get_or_create_page("Dashboard")
-        self._get_or_create_page("Clean Tune")  # Needed for AI integration
+        dashboard = self._get_or_create_page("Dashboard")
+        clean_tune = self._get_or_create_page("Clean Tune")
         
         # Wire AI Console to Clean Tune
         ai_console = self._get_or_create_page("AI Console")
@@ -154,7 +154,9 @@ class MainWindow(QWidget):
         page_class = self._page_classes[name]
         
         # Special handling for pages that need AI instance
-        if name == "AI Console":
+        if name == "Dashboard":
+            page = page_class(ai=self.ai, main_window=self)
+        elif name == "AI Console":
             clean_tune = self._page_instances.get("Clean Tune")
             page = page_class(ai=self.ai, clean_tune_page=clean_tune)
         elif name == "Settings":

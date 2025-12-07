@@ -1,49 +1,717 @@
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QHBoxLayout
+# ui/dashboard_page.py
+"""
+Refined Dashboard - Clean, functional system overview.
+"""
+
+import psutil
+import platform
+import os
+import random
+import subprocess
+import webbrowser
+from datetime import datetime
+from pathlib import Path
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel, QFrame, QHBoxLayout, 
+    QGridLayout, QPushButton, QProgressBar, QScrollArea
+)
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QPixmap
+
+# Daily tips
+DAILY_TIPS = [
+    "💡 Run a cleanup every 2 weeks to keep things fast.",
+    "📂 Your Downloads folder fills up quickly—check it occasionally.",
+    "🚀 Consider turning off unused startup apps.",
+    "📊 Remember to generate a system report monthly.",
+    "🔄 Restart your PC at least once a week for best performance.",
+    "🛡️ Run a virus scan if you notice unusual slowdowns.",
+    "💾 Keep at least 20GB of free disk space for optimal performance.",
+    "⚙️ Update Windows regularly to get the latest security patches.",
+]
+
 
 class DashboardPage(QWidget):
-    def __init__(self):
+    def __init__(self, ai=None, main_window=None):
         super().__init__()
-        layout = QVBoxLayout()
+        self.ai = ai
+        self.main_window = main_window
+        self.daily_tip = random.choice(DAILY_TIPS)
+        self._init_ui()
+        
+        # Auto-refresh stats every 5 seconds
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self._update_stats)
+        self.refresh_timer.start(5000)
+        
+        # Initial update
+        self._update_stats()
+
+    def _init_ui(self):
+        # Main layout for the page
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # Create scroll area
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background: transparent;
+            }
+            QScrollBar:vertical {
+                background: #1b2230;
+                width: 12px;
+                border-radius: 6px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #3d4a6b;
+                border-radius: 6px;
+                min-height: 30px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #6e8bff;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+            }
+            QScrollBar:horizontal {
+                height: 0;
+            }
+        """)
+        
+        # Content widget inside scroll area
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
         layout.setContentsMargins(40, 40, 40, 40)
         layout.setSpacing(25)
 
-        title = QLabel("📊 Dashboard")
+        # ===== HEADER WITH LOGO =====
+        header_layout = QHBoxLayout()
+        
+        # SARA Logo
+        logo_label = QLabel()
+        try:
+            pixmap = QPixmap("assets/SARA.png")
+            if not pixmap.isNull():
+                scaled_pixmap = pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                logo_label.setPixmap(scaled_pixmap)
+            else:
+                logo_label.setText("🤖")
+                logo_label.setStyleSheet("font-size: 60px;")
+        except:
+            logo_label.setText("🤖")
+            logo_label.setStyleSheet("font-size: 60px;")
+        
+        header_layout.addWidget(logo_label)
+        
+        # Title section
+        title_section = QVBoxLayout()
+        title_section.setSpacing(5)
+        
+        title = QLabel("Welcome to SARA")
         title.setObjectName("title")
-        subtitle = QLabel("System overview and quick stats")
+        
+        subtitle = QLabel("Your AI-Powered PC Repair Assistant")
         subtitle.setObjectName("subtitle")
+        
+        title_section.addWidget(title)
+        title_section.addWidget(subtitle)
+        
+        header_layout.addLayout(title_section)
+        header_layout.addStretch()
+        
+        layout.addLayout(header_layout)
 
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
+        # ===== DAILY TIP =====
+        tip_card = self._create_tip_card()
+        layout.addWidget(tip_card)
 
-        # Example system info cards
-        row = QHBoxLayout()
-        row.setSpacing(20)
-        row.addWidget(self.create_card("System Status", "All systems operational"))
-        row.addWidget(self.create_card("Last Maintenance", "2 days ago"))
-        row.addWidget(self.create_card("Performance Score", "96%"))
+        # ===== SYSTEM HEALTH OVERVIEW =====
+        health_label = QLabel("System Health")
+        health_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #fff; margin-top: 10px;")
+        layout.addWidget(health_label)
+        
+        health_grid = QGridLayout()
+        health_grid.setSpacing(20)
+        
+        # Create stat cards
+        self.cpu_card = self._create_stat_card("🖥️ CPU Usage", "0%", "")
+        self.memory_card = self._create_stat_card("💾 Memory", "0%", "")
+        self.uptime_card = self._create_stat_card("⏱️ System Uptime", "0h", "")
+        
+        health_grid.addWidget(self.cpu_card, 0, 0)
+        health_grid.addWidget(self.memory_card, 0, 1)
+        health_grid.addWidget(self.uptime_card, 0, 2)
+        
+        layout.addLayout(health_grid)
 
-        layout.addLayout(row)
+        # ===== DISK SPACE (All Drives) =====
+        disk_label = QLabel("Disk Space")
+        disk_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #fff; margin-top: 20px;")
+        layout.addWidget(disk_label)
+        
+        self.disk_cards_layout = QVBoxLayout()
+        self.disk_cards_layout.setSpacing(15)
+        layout.addLayout(self.disk_cards_layout)
+
+        # ===== AI STATUS =====
+        ai_label = QLabel("AI Status")
+        ai_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #fff; margin-top: 20px;")
+        layout.addWidget(ai_label)
+        
+        self.ai_status_card = self._create_ai_status_card()
+        layout.addWidget(self.ai_status_card)
+
+        # ===== LAST REPORT =====
+        report_label = QLabel("Latest System Report")
+        report_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #fff; margin-top: 20px;")
+        layout.addWidget(report_label)
+        
+        self.last_report_card = self._create_last_report_card()
+        layout.addWidget(self.last_report_card)
+
+        # ===== SYSTEM INFORMATION =====
+        info_label = QLabel("System Information")
+        info_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #fff; margin-top: 20px;")
+        layout.addWidget(info_label)
+        
+        self.system_info_card = self._create_system_info_card()
+        layout.addWidget(self.system_info_card)
+
         layout.addStretch()
-        self.setLayout(layout)
+        
+        # Set content widget to scroll area
+        scroll_area.setWidget(content_widget)
+        
+        # Add scroll area to main layout
+        main_layout.addWidget(scroll_area)
 
-    def create_card(self, title, description):
+    def _create_tip_card(self):
+        """Create daily tip card."""
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #2a3441, stop:1 #1b2230);
+                border-radius: 12px;
+                border: 1px solid #6e8bff;
+                padding: 20px;
+            }
+        """)
+        
+        layout = QHBoxLayout(card)
+        layout.setSpacing(15)
+        
+        icon = QLabel("💡")
+        icon.setStyleSheet("font-size: 32px;")
+        layout.addWidget(icon)
+        
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(5)
+        
+        title = QLabel("Daily Tip")
+        title.setStyleSheet("font-size: 14px; font-weight: 600; color: #6e8bff;")
+        
+        tip_text = QLabel(self.daily_tip)
+        tip_text.setStyleSheet("font-size: 14px; color: #e8eef6;")
+        tip_text.setWordWrap(True)
+        
+        text_layout.addWidget(title)
+        text_layout.addWidget(tip_text)
+        
+        layout.addLayout(text_layout)
+        layout.addStretch()
+        
+        return card
+
+    def _create_stat_card(self, title, value, subtitle):
+        """Create a stat card widget."""
         card = QFrame()
         card.setStyleSheet("""
             QFrame {
                 background: #1b2230;
                 border-radius: 12px;
                 border: 1px solid #2b3548;
+                padding: 20px;
+            }
+            QFrame:hover {
+                border-color: #6e8bff;
             }
         """)
-        vbox = QVBoxLayout(card)
-        vbox.setContentsMargins(20, 20, 20, 20)
-        vbox.setSpacing(6)
-
-        t_lbl = QLabel(title)
-        t_lbl.setStyleSheet("font-size: 16px; font-weight: 600; color: white;")
-        d_lbl = QLabel(description)
-        d_lbl.setStyleSheet("color: #cfd7ff; font-size: 13px;")
-
-        vbox.addWidget(t_lbl)
-        vbox.addWidget(d_lbl)
+        
+        layout = QVBoxLayout(card)
+        layout.setSpacing(10)
+        
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-size: 14px; font-weight: 600; color: #9eb3ff;")
+        
+        value_label = QLabel(value)
+        value_label.setObjectName("card_value")
+        value_label.setStyleSheet("font-size: 32px; font-weight: 700; color: #ffffff;")
+        
+        subtitle_label = QLabel(subtitle)
+        subtitle_label.setStyleSheet("font-size: 12px; color: #7f8c8d;")
+        
+        # Progress bar
+        progress = QProgressBar()
+        progress.setTextVisible(False)
+        progress.setFixedHeight(6)
+        progress.setStyleSheet("""
+            QProgressBar {
+                background: #0f1522;
+                border-radius: 3px;
+                border: none;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #6e8bff, stop:1 #9b6eff);
+                border-radius: 3px;
+            }
+        """)
+        progress.setRange(0, 100)
+        progress.setValue(0)
+        
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+        layout.addWidget(progress)
+        layout.addWidget(subtitle_label)
+        layout.addStretch()
+        
+        # Store references
+        card.value_label = value_label
+        card.subtitle_label = subtitle_label
+        card.progress = progress
+        
         return card
+
+    def _create_disk_card(self, drive_letter, used_gb, total_gb, percent):
+        """Create a disk space card for a specific drive."""
+        card = QFrame()
+        
+        # Color based on usage
+        if percent >= 90:
+            border_color = "#e74c3c"
+        elif percent >= 80:
+            border_color = "#FFA726"
+        else:
+            border_color = "#2b3548"
+        
+        card.setStyleSheet(f"""
+            QFrame {{
+                background: #1b2230;
+                border-radius: 12px;
+                border: 2px solid {border_color};
+                padding: 15px;
+            }}
+        """)
+        
+        layout = QHBoxLayout(card)
+        layout.setSpacing(20)
+        
+        # Drive info
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(5)
+        
+        drive_label = QLabel(f"💿 Drive {drive_letter}")
+        drive_label.setStyleSheet("font-size: 16px; font-weight: 600; color: #ffffff;")
+        
+        space_label = QLabel(f"{used_gb:.1f} GB / {total_gb:.1f} GB used ({percent:.0f}%)")
+        space_label.setStyleSheet("font-size: 13px; color: #9eb3ff;")
+        
+        free_gb = total_gb - used_gb
+        free_label = QLabel(f"{free_gb:.1f} GB free")
+        free_label.setStyleSheet("font-size: 12px; color: #7f8c8d;")
+        
+        info_layout.addWidget(drive_label)
+        info_layout.addWidget(space_label)
+        info_layout.addWidget(free_label)
+        
+        layout.addLayout(info_layout)
+        layout.addStretch()
+        
+        # Warning if low space
+        if percent >= 90:
+            warning_layout = QVBoxLayout()
+            warning_icon = QLabel("⚠️")
+            warning_icon.setStyleSheet("font-size: 32px;")
+            warning_text = QLabel("Low Space!\nRun Cleanup")
+            warning_text.setStyleSheet("font-size: 12px; color: #e74c3c; font-weight: 600;")
+            warning_text.setAlignment(Qt.AlignCenter)
+            warning_layout.addWidget(warning_icon, alignment=Qt.AlignCenter)
+            warning_layout.addWidget(warning_text)
+            layout.addLayout(warning_layout)
+        
+        return card
+
+    def _create_ai_status_card(self):
+        """Create AI status card."""
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background: #1b2230;
+                border-radius: 12px;
+                border: 1px solid #2b3548;
+                padding: 20px;
+            }
+        """)
+        
+        layout = QHBoxLayout(card)
+        layout.setSpacing(20)
+        
+        # Status indicator
+        self.ai_status_dot = QLabel("●")
+        self.ai_status_dot.setStyleSheet("color: #FFA726; font-size: 36px;")
+        layout.addWidget(self.ai_status_dot)
+        
+        # Status info
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(5)
+        
+        self.ai_status_text = QLabel("AI Model Loading...")
+        self.ai_status_text.setStyleSheet("font-size: 16px; font-weight: 600; color: #ffffff;")
+        
+        self.ai_model_text = QLabel("Model: Loading...")
+        self.ai_model_text.setStyleSheet("font-size: 13px; color: #9eb3ff;")
+        
+        self.ai_speed_text = QLabel("Speed: --")
+        self.ai_speed_text.setStyleSheet("font-size: 13px; color: #9eb3ff;")
+        
+        info_layout.addWidget(self.ai_status_text)
+        info_layout.addWidget(self.ai_model_text)
+        info_layout.addWidget(self.ai_speed_text)
+        
+        layout.addLayout(info_layout)
+        layout.addStretch()
+        
+        return card
+
+    def _create_last_report_card(self):
+        """Create last report summary card."""
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background: #1b2230;
+                border-radius: 12px;
+                border: 1px solid #2b3548;
+                padding: 20px;
+            }
+        """)
+        
+        layout = QVBoxLayout(card)
+        layout.setSpacing(15)
+        
+        # Check for latest report
+        reports_dir = Path(__file__).resolve().parent.parent / "reports"
+        
+        self.latest_report_path = None
+        
+        if reports_dir.exists():
+            reports = list(reports_dir.glob("*.txt")) + list(reports_dir.glob("*.pdf")) + list(reports_dir.glob("*.html"))
+            if reports:
+                latest_report = max(reports, key=os.path.getmtime)
+                self.latest_report_path = latest_report
+                file_time = datetime.fromtimestamp(latest_report.stat().st_mtime)
+                time_ago = self._time_ago(file_time)
+                
+                header = QLabel(f"📄 {latest_report.stem}")
+                header.setStyleSheet("font-size: 15px; font-weight: 600; color: #ffffff;")
+                
+                time_label = QLabel(f"Generated {time_ago}")
+                time_label.setStyleSheet("font-size: 13px; color: #9eb3ff;")
+                
+                # Buttons row
+                buttons_layout = QHBoxLayout()
+                
+                # Open report button
+                open_btn = QPushButton("📂 Open Report")
+                open_btn.setCursor(Qt.PointingHandCursor)
+                open_btn.setStyleSheet("""
+                    QPushButton {
+                        background: #6e8bff;
+                        color: white;
+                        border: none;
+                        border-radius: 6px;
+                        padding: 10px 20px;
+                        font-weight: 600;
+                    }
+                    QPushButton:hover {
+                        background: #869eff;
+                    }
+                """)
+                open_btn.clicked.connect(self._open_latest_report)
+                
+                # View all button
+                view_all_btn = QPushButton("📊 View All")
+                view_all_btn.setCursor(Qt.PointingHandCursor)
+                view_all_btn.setStyleSheet("""
+                    QPushButton {
+                        background: #2b3548;
+                        color: white;
+                        border: none;
+                        border-radius: 6px;
+                        padding: 10px 20px;
+                        font-weight: 600;
+                    }
+                    QPushButton:hover {
+                        background: #3d4a6b;
+                    }
+                """)
+                view_all_btn.clicked.connect(self._open_reports_page)
+                
+                buttons_layout.addWidget(open_btn)
+                buttons_layout.addWidget(view_all_btn)
+                
+                layout.addWidget(header)
+                layout.addWidget(time_label)
+                layout.addLayout(buttons_layout)
+            else:
+                no_reports = QLabel("📭 No reports generated yet")
+                no_reports.setStyleSheet("color: #7f8c8d; font-size: 14px;")
+                
+                hint = QLabel("Generate a report from the Reports page to see system health analysis")
+                hint.setStyleSheet("color: #7f8c8d; font-size: 12px;")
+                hint.setWordWrap(True)
+                
+                layout.addWidget(no_reports)
+                layout.addWidget(hint)
+        else:
+            no_reports = QLabel("📭 No reports directory found")
+            no_reports.setStyleSheet("color: #7f8c8d; font-size: 14px;")
+            layout.addWidget(no_reports)
+        
+        return card
+
+    def _create_system_info_card(self):
+        """Create system information card."""
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background: #1b2230;
+                border-radius: 12px;
+                border: 1px solid #2b3548;
+                padding: 20px;
+            }
+        """)
+        
+        layout = QGridLayout(card)
+        layout.setSpacing(15)
+        
+        try:
+            os_name = f"{platform.system()} {platform.release()}"
+            processor = platform.processor() or "Unknown"
+            ram_gb = round(psutil.virtual_memory().total / (1024**3), 1)
+            
+            info_items = [
+                ("Operating System:", os_name),
+                ("Processor:", processor),
+                ("Total RAM:", f"{ram_gb} GB"),
+                ("Python Version:", platform.python_version()),
+            ]
+            
+            for i, (label, value) in enumerate(info_items):
+                label_widget = QLabel(label)
+                label_widget.setStyleSheet("font-weight: 600; color: #9eb3ff;")
+                
+                value_widget = QLabel(value)
+                value_widget.setStyleSheet("color: #e8eef6;")
+                value_widget.setWordWrap(True)
+                
+                layout.addWidget(label_widget, i, 0)
+                layout.addWidget(value_widget, i, 1)
+                
+        except Exception as e:
+            error_label = QLabel(f"Could not load system info: {e}")
+            error_label.setStyleSheet("color: #e74c3c;")
+            layout.addWidget(error_label, 0, 0)
+        
+        return card
+
+    def _update_stats(self):
+        """Update dashboard statistics."""
+        try:
+            # === CPU Usage ===
+            cpu_percent = psutil.cpu_percent(interval=0.1)
+            self.cpu_card.value_label.setText(f"{cpu_percent:.0f}%")
+            self.cpu_card.progress.setValue(int(cpu_percent))
+            
+            if cpu_percent < 50:
+                color = "#4CAF50"
+            elif cpu_percent < 80:
+                color = "#FFA726"
+            else:
+                color = "#e74c3c"
+            
+            self.cpu_card.subtitle_label.setText(
+                f"<span style='color: {color};'>●</span> {self._get_health_text(cpu_percent)}"
+            )
+            
+            # === Memory Usage ===
+            memory = psutil.virtual_memory()
+            mem_percent = memory.percent
+            mem_used = round(memory.used / (1024**3), 1)
+            mem_total = round(memory.total / (1024**3), 1)
+            
+            self.memory_card.value_label.setText(f"{mem_percent:.0f}%")
+            self.memory_card.progress.setValue(int(mem_percent))
+            self.memory_card.subtitle_label.setText(f"{mem_used} / {mem_total} GB used")
+            
+            # === System Uptime ===
+            boot_time = psutil.boot_time()
+            uptime_seconds = datetime.now().timestamp() - boot_time
+            uptime_hours = int(uptime_seconds / 3600)
+            uptime_days = uptime_hours // 24
+            uptime_hours_remaining = uptime_hours % 24
+            
+            if uptime_days > 0:
+                uptime_text = f"{uptime_days}d {uptime_hours_remaining}h"
+            else:
+                uptime_text = f"{uptime_hours}h"
+            
+            self.uptime_card.value_label.setText(uptime_text)
+            self.uptime_card.progress.setValue(0)
+            self.uptime_card.subtitle_label.setText(
+                "Since last restart" if uptime_days < 7 else "⚠️ Consider restarting"
+            )
+            
+            # === Disk Space (All Drives) ===
+            # Clear existing disk cards
+            while self.disk_cards_layout.count():
+                item = self.disk_cards_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            
+            # Get all disk partitions
+            partitions = psutil.disk_partitions()
+            for partition in partitions:
+                try:
+                    # Skip CD-ROM and other special drives
+                    if 'cdrom' in partition.opts or partition.fstype == '':
+                        continue
+                    
+                    usage = psutil.disk_usage(partition.mountpoint)
+                    used_gb = usage.used / (1024**3)
+                    total_gb = usage.total / (1024**3)
+                    percent = usage.percent
+                    
+                    disk_card = self._create_disk_card(partition.device, used_gb, total_gb, percent)
+                    self.disk_cards_layout.addWidget(disk_card)
+                except:
+                    continue
+            
+            # === AI Status (FIXED - checks is_loaded properly) ===
+            if self.ai:
+                # Safely check attributes with proper defaults
+                is_loaded = getattr(self.ai, 'is_loaded', False)
+                is_loading = getattr(self.ai, 'is_loading', False)
+                
+                # Priority order: loading > loaded > not loaded
+                if is_loading:
+                    # Model is currently loading
+                    self.ai_status_dot.setStyleSheet("color: #FFA726; font-size: 36px;")
+                    self.ai_status_text.setText("⏳ Loading Model...")
+                    self.ai_model_text.setText("Please wait...")
+                    self.ai_speed_text.setText("")
+                    
+                elif is_loaded:
+                    # Model is fully loaded and ready
+                    self.ai_status_dot.setStyleSheet("color: #4CAF50; font-size: 36px;")
+                    self.ai_status_text.setText("✅ AI Ready")
+                    
+                    model_name = getattr(self.ai, 'model_key', 'Unknown')
+                    self.ai_model_text.setText(f"Model: {model_name}")
+                    
+                    # Try to get speed
+                    try:
+                        if hasattr(self.ai, '_benchmark_tps') and callable(self.ai._benchmark_tps):
+                            speed = self.ai._benchmark_tps()
+                            if speed > 0:
+                                self.ai_speed_text.setText(f"Speed: {speed:.1f} tokens/sec")
+                            else:
+                                self.ai_speed_text.setText("Speed: Ready")
+                        else:
+                            self.ai_speed_text.setText("Speed: Ready")
+                    except Exception:
+                        self.ai_speed_text.setText("Speed: Ready")
+                        
+                else:
+                    # Model is not loaded
+                    self.ai_status_dot.setStyleSheet("color: #e74c3c; font-size: 36px;")
+                    self.ai_status_text.setText("⛔ AI Not Loaded")
+                    self.ai_model_text.setText("Go to AI Console to load")
+                    self.ai_speed_text.setText("")
+            else:
+                # No AI instance available
+                self.ai_status_dot.setStyleSheet("color: #e74c3c; font-size: 36px;")
+                self.ai_status_text.setText("⛔ AI Not Available")
+                self.ai_model_text.setText("AI module not initialized")
+                self.ai_speed_text.setText("")
+            
+        except Exception as e:
+            print(f"Dashboard update error: {e}")
+
+    def _get_health_text(self, percent):
+        """Get health status text based on percentage."""
+        if percent < 50:
+            return "Healthy"
+        elif percent < 80:
+            return "Moderate"
+        else:
+            return "High"
+
+    def _time_ago(self, dt):
+        """Get human-readable time ago string."""
+        now = datetime.now()
+        diff = now - dt
+        
+        seconds = diff.total_seconds()
+        
+        if seconds < 60:
+            return "just now"
+        elif seconds < 3600:
+            minutes = int(seconds / 60)
+            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+        elif seconds < 86400:
+            hours = int(seconds / 3600)
+            return f"{hours} hour{'s' if hours != 1 else ''} ago"
+        else:
+            days = int(seconds / 86400)
+            return f"{days} day{'s' if days != 1 else ''} ago"
+
+    def _open_latest_report(self):
+        """Open the latest report in appropriate application."""
+        if not self.latest_report_path or not self.latest_report_path.exists():
+            return
+        
+        try:
+            # Get file extension
+            ext = self.latest_report_path.suffix.lower()
+            path_str = str(self.latest_report_path)
+            
+            if ext == '.pdf':
+                # Open PDF in default browser
+                webbrowser.open(path_str)
+            elif ext in ['.txt', '.html']:
+                # Open text/HTML files
+                if os.name == 'nt':  # Windows
+                    os.startfile(path_str)
+                else:  # Mac/Linux
+                    webbrowser.open(path_str)
+            else:
+                # Fallback - try to open with default application
+                webbrowser.open(path_str)
+                
+        except Exception as e:
+            print(f"Error opening report: {e}")
+
+    def _open_reports_page(self):
+        """Navigate to Reports page."""
+        if self.main_window:
+            try:
+                self.main_window._switch_page("Reports")
+            except Exception as e:
+                print(f"Error navigating to Reports: {e}")

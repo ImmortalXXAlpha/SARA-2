@@ -67,3 +67,4 @@ networkx==3.5
 pillow==11.3.0
 pywin32-ctypes==0.2.3
 typing_extensions==4.15.0
+reportlab

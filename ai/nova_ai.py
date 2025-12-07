@@ -1,7 +1,7 @@
 # ai/nova_ai.py
 """
 NovaAI - Simplified and robust version
-Avoids complex threading during model operations.
+Default model changed to qwen2.5-1.5b (phi3-mini removed)
 """
 
 import torch
@@ -19,26 +19,24 @@ from transformers import (
 
 class NovaAI:
     MODELS = {
-        "mistral-7b": "mistralai/Mistral-7B-Instruct-v0.2",
-        "phi3-mini": "microsoft/Phi-3.5-mini-instruct",
+        "qwen2.5-1.5b": "Qwen/Qwen2.5-1.5B-Instruct",
         "deepseek-1.5b": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
-        "qwen2.5-1.5b": "Qwen/Qwen2.5-1.5B-Instruct"
+        "mistral-7b": "mistralai/Mistral-7B-Instruct-v0.2",
     }
 
     VRAM_REQ_GB = {
-        "mistral-7b": 6.0,
-        "phi3-mini": 3.0,
+        "qwen2.5-1.5b": 1.5,
         "deepseek-1.5b": 2.0,
-        "qwen2.5-1.5b": 1.5
+        "mistral-7b": 6.0,
     }
 
     def __init__(self,
-                 model_key: str = "phi3-mini",
+                 model_key: str = "qwen2.5-1.5b",
                  force_cpu: bool = False,
                  vram_limit_gb: Optional[float] = None,
                  idle_unload_seconds: int = 600):
         if model_key not in self.MODELS:
-            model_key = "phi3-mini"
+            model_key = "qwen2.5-1.5b"
         self.model_key = model_key
         self.model_name = self.MODELS[model_key]
 

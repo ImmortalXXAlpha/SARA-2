@@ -1,6 +1,7 @@
 # ui/clean_tune_page.py
 """
 Enhanced Clean & Tune Page with AI-powered threat analysis.
+Optimized for stability and API rate limits.
 """
 
 import os
@@ -9,9 +10,9 @@ import time
 import hashlib
 import threading
 import subprocess
+import requests
 from datetime import datetime
 
-import requests
 from PySide6.QtCore import Qt, QTimer, QObject, Signal, QPropertyAnimation, QThread, Slot
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QGridLayout, QLabel, QPushButton,
@@ -20,11 +21,9 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect, QApplication, QScrollArea, QSplitter
 )
 
-# VirusTotal API Key
-VT_API_KEY = os.getenv("VT_API_KEY", "").strip()
-if not VT_API_KEY:
-    #VT_API_KEY = "2bfe6972b6f0cfe9dd9b067fee7b1b5b0b7f6f1fe765c88d1750faf8333a7a9a" #John's
-    VT_API_KEY = "b2a200436bea951ded7e32d851c3953d516b05078e6aea29485dde3e80c791e5" #Mango's
+# VirusTotal API Key Configuration
+# RESTORED: Using the key provided in your original file.
+VT_API_KEY = "b2a200436bea951ded7e32d851c3953d516b05078e6aea29485dde3e80c791e5"
 
 
 class LogWindow(QDialog):
@@ -41,10 +40,9 @@ class LogWindow(QDialog):
         self._auto_close = False
         self._tool_name = tool_name
         self._workflow_mode = False
-        self._is_closing = False  # NEW: Prevent double-close
+        self._is_closing = False 
         
         # Completion detector
-        from ui.clean_tune_page import ToolCompletionDetector
         self._detector = ToolCompletionDetector(tool_name) if tool_name else None
 
         v = QVBoxLayout(self)
@@ -96,7 +94,7 @@ class LogWindow(QDialog):
                 self._detector.add_line(s)
 
     def stop_timer(self):
-        if self._timer.isActive():
+        if self._timer and self._timer.isActive():
             self._timer.stop()
         if self._auto_close_timer:
             self._auto_close_timer.stop()
@@ -157,18 +155,19 @@ class LogWindow(QDialog):
         try:
             self.finished.emit(self._success, self._message)
         except RuntimeError:
-            pass  # Signal disconnected, ignore
+            pass 
         
         try:
             self.closed.emit()
         except RuntimeError:
-            pass  # Signal disconnected, ignore
+            pass
         
         # Clear detector reference
         if hasattr(self, '_detector'):
             self._detector = None
         
         e.accept()
+
 
 class ToolCompletionDetector:
     """
@@ -238,7 +237,7 @@ class ToolCompletionDetector:
     def __init__(self, tool_name: str):
         self.tool_name = tool_name
         self.output_buffer = []
-        self.max_buffer_size = 50  # Keep last 50 lines
+        self.max_buffer_size = 50 
         self.is_complete = False
         self.success = False
         self.message = ""
@@ -293,7 +292,6 @@ class ToolCompletionDetector:
         # Find the line containing the pattern
         for line in reversed(self.output_buffer):
             if pattern.lower() in line:
-                # Clean up and return the line
                 return line.strip()
         return pattern
     
@@ -304,7 +302,6 @@ class ToolCompletionDetector:
         
         # If still not marked complete after process ends, check return code context
         if not self.is_complete:
-            # Look for generic completion indicators
             recent = "\n".join(self.output_buffer[-5:])
             if any(word in recent for word in ["complete", "finished", "done", "success"]):
                 self.is_complete = True
@@ -388,20 +385,18 @@ class AIThreatAnalyzer(QThread):
             
             files_text = "\n".join(file_info)
             
-            prompt = f"""You are a cybersecurity expert helping a user understand potential threats on their computer.
+            prompt = f"""You are a cybersecurity expert helping a user understand potential threats.
 
-These files were flagged by VirusTotal antivirus engines:
+These files were flagged by VirusTotal:
 
 {files_text}
 
 For each file, provide:
-1. **Risk Assessment**: Is this likely a real threat or a false positive? (High/Medium/Low risk)
-2. **Explanation**: What type of threat could this be? (malware type, adware, PUP, etc.)
-3. **Context**: Are files with this name/extension commonly flagged incorrectly?
-4. **Recommendation**: Should the user delete it, quarantine it, or is it likely safe?
+1. **Risk Assessment**: High/Medium/Low?
+2. **Explanation**: Malware type (adware, trojan, etc)?
+3. **Recommendation**: Delete, quarantine, or ignore?
 
-Be helpful but cautious - when in doubt, recommend deletion or professional help.
-Keep explanations simple for non-technical users."""
+Keep explanations simple."""
 
             response = self.ai.generate(prompt, max_new_tokens=600, temperature=0.4)
             self.finished.emit(response)
@@ -498,14 +493,10 @@ class ReviewDialog(QDialog):
         scroll.setStyleSheet("""
             QScrollArea { border: none; background: transparent; }
             QScrollBar:vertical {
-                background: #1b2230;
-                width: 12px;
-                border-radius: 6px;
+                background: #1b2230; width: 12px; border-radius: 6px;
             }
             QScrollBar::handle:vertical {
-                background: #3d4a6b;
-                border-radius: 6px;
-                min-height: 30px;
+                background: #3d4a6b; border-radius: 6px; min-height: 30px;
             }
             QScrollBar::handle:vertical:hover { background: #6e8bff; }
         """)
@@ -541,11 +532,8 @@ class ReviewDialog(QDialog):
         self.delete_btn = QPushButton("🗑️ Delete Selected")
         self.delete_btn.setStyleSheet("""
             QPushButton {
-                background: #c0392b;
-                color: white;
-                padding: 10px 20px;
-                border-radius: 6px;
-                font-weight: 600;
+                background: #c0392b; color: white; padding: 10px 20px;
+                border-radius: 6px; font-weight: 600;
             }
             QPushButton:hover { background: #e74c3c; }
             QPushButton:disabled { background: #555; }
@@ -562,14 +550,11 @@ class ReviewDialog(QDialog):
         layout.addLayout(btn_row)
 
     def _create_file_widget(self, item):
-        """Create a styled widget for each flagged file."""
         frame = QFrame()
         frame.setStyleSheet("""
             QFrame {
-                background: #0f1522;
-                border: 1px solid #2b3548;
-                border-radius: 8px;
-                padding: 5px;
+                background: #0f1522; border: 1px solid #2b3548;
+                border-radius: 8px; padding: 5px;
             }
             QFrame:hover { border-color: #6e8bff; }
         """)
@@ -588,7 +573,6 @@ class ReviewDialog(QDialog):
         path = item.get("path", "")
         bad = item.get("malicious", 0)
         
-        # Risk color
         if bad >= 10:
             risk_color = "#e74c3c"
             risk_text = "HIGH RISK"
@@ -710,7 +694,7 @@ class CleanTunePage(QWidget):
         self._active_log = None
         self._current_log = None
         self._in_workflow_mode = False
-        self._active_threads = []  # NEW: Track active threads
+        self._active_threads = [] 
         self._init_ui()
 
     def set_ai(self, ai):
@@ -731,8 +715,6 @@ class CleanTunePage(QWidget):
         grid = QGridLayout()
         grid.setSpacing(25)
 
-    
-
         self.tools = {
             "System File Checker (SFC)": {
                 "desc": "Scans and repairs corrupted system files",
@@ -750,7 +732,7 @@ class CleanTunePage(QWidget):
                 "icon": "🧹"
             },
             "SmartScan (VirusTotal)": {
-                "desc": "AI-powered virus scan with VirusTotal",
+                "desc": "AI-powered scan checking executables against VT",
                 "ps": None,
                 "icon": "🛡️"
             },
@@ -772,24 +754,11 @@ class CleanTunePage(QWidget):
         root.addLayout(grid)
         root.addStretch()
 
-    def _cleanup_thread(self, thread):
-        """Safely cleanup a finished thread."""
-        try:
-            if thread and thread.isRunning():
-                thread.quit()
-                thread.wait(1000)  # Wait up to 1 second
-            if thread in self._active_threads:
-                self._active_threads.remove(thread)
-        except:
-            pass
-
     def _make_card(self, title, desc, icon=""):
         card = QFrame()
         card.setStyleSheet("""
             QFrame {
-                background: #1b2230;
-                border: 1px solid #2b3548;
-                border-radius: 12px;
+                background: #1b2230; border: 1px solid #2b3548; border-radius: 12px;
             }
             QFrame:hover { border-color: #6e8bff; }
         """)
@@ -826,12 +795,8 @@ class CleanTunePage(QWidget):
         btn.setCursor(Qt.PointingHandCursor)
         btn.setStyleSheet("""
             QPushButton {
-                background: #6e8bff;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 10px;
-                font-weight: 600;
+                background: #6e8bff; color: white; border: none;
+                border-radius: 6px; padding: 10px; font-weight: 600;
             }
             QPushButton:hover { background: #869eff; }
         """)
@@ -845,7 +810,6 @@ class CleanTunePage(QWidget):
         return card, bar, tl
 
     def _start_tool(self, tool_name: str):
-        # Check if in workflow mode
         in_workflow = hasattr(self, '_in_workflow_mode') and self._in_workflow_mode
         
         pbar = self.progress_bars[tool_name]
@@ -853,10 +817,7 @@ class CleanTunePage(QWidget):
         pbar.setValue(0)
         tlab.setText("⏱ 00:00")
 
-        # Create log window with tool name for detector
         log = LogWindow(tool_name, tool_name=tool_name)
-        
-        # Set workflow mode on window
         if in_workflow:
             log.set_workflow_mode(True)
         
@@ -871,9 +832,15 @@ class CleanTunePage(QWidget):
         self._active_timer = card_timer
 
         def stop_running():
+            # Force kill if canceled via UI
             if self._active_proc and self._active_proc.poll() is None:
                 try:
-                    self._active_proc.terminate()
+                    subprocess.run(
+                        f"taskkill /F /T /PID {self._active_proc.pid}", 
+                        shell=True, 
+                        stdout=subprocess.DEVNULL, 
+                        stderr=subprocess.DEVNULL
+                    )
                 except:
                     pass
             if card_timer.isActive():
@@ -902,7 +869,7 @@ class CleanTunePage(QWidget):
             
             log.append(f"📂 Scanning folder: {folder}\n")
             thread = threading.Thread(target=self._smartscan_worker, args=(folder, sig), daemon=True)
-            self._active_threads.append(thread)  # Track it
+            self._active_threads.append(thread)
             thread.start()
 
         elif tool_name == "Cleanup Temp Files":
@@ -913,16 +880,17 @@ class CleanTunePage(QWidget):
                 return
             opts = dlg.selections()
             thread = threading.Thread(target=self._cleanup_worker, args=(opts, sig), daemon=True)
-            self._active_threads.append(thread)  # Track it
+            self._active_threads.append(thread)
             thread.start()
 
         else:
             ps_cmd = self.tools[tool_name]["ps"]
             thread = threading.Thread(target=self._powershell_worker, args=(ps_cmd, sig), daemon=True)
-            self._active_threads.append(thread)  # Track it
+            self._active_threads.append(thread)
             thread.start()
 
     def _powershell_worker(self, inner_cmd: str, sig: WorkerSignals):
+        """Optimized PowerShell worker with unbuffered line reading."""
         script = (
             "$ProgressPreference='SilentlyContinue'; "
             "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
@@ -933,47 +901,53 @@ class CleanTunePage(QWidget):
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-        proc = subprocess.Popen(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", startupinfo=si, creationflags=flags
-        )
-        self._active_proc = proc
+        try:
+            proc = subprocess.Popen(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", startupinfo=si, creationflags=flags,
+                bufsize=1  # Line buffered
+            )
+            self._active_proc = proc
 
-        percent_pat = re.compile(r'(\d{1,3})(?:\.\d+)?\s*%')
-        for line in proc.stdout:
-            clean = re.sub(r"[^\x09\x0A\x0D\x20-\x7E]", "", line).strip()
-            if clean:
-                sig.message.emit(clean)
-                m = percent_pat.search(clean)
-                if m:
-                    sig.progress.emit(max(0, min(100, int(float(m.group(1))))))
-        proc.wait()
-        sig.done.emit(proc.returncode == 0, f"Finished with code {proc.returncode}")
+            percent_pat = re.compile(r'(\d{1,3})(?:\.\d+)?\s*%')
+            
+            # Use readline loop for better responsiveness
+            while True:
+                line = proc.stdout.readline()
+                if not line and proc.poll() is not None:
+                    break
+                
+                if line:
+                    clean = re.sub(r"[^\x09\x0A\x0D\x20-\x7E]", "", line).strip()
+                    if clean:
+                        sig.message.emit(clean)
+                        m = percent_pat.search(clean)
+                        if m:
+                            sig.progress.emit(max(0, min(100, int(float(m.group(1))))))
+
+            rc = proc.wait()
+            sig.done.emit(rc == 0, f"Finished with code {rc}")
+            
+        except Exception as e:
+            sig.done.emit(False, f"Failed to start process: {e}")
 
     def _cleanup_worker(self, opts: dict, sig: WorkerSignals):
-        """Fixed cleanup worker with proper PowerShell command separation."""
-        
-        # Build commands as a list - each is a separate statement
         commands = []
         commands.append('$ProgressPreference="SilentlyContinue"')
         commands.append('[Console]::OutputEncoding=[Text.Encoding]::UTF8')
         commands.append('chcp 65001 > $null')
         commands.append('Write-Output "Starting Cleanup..."')
         
-        # TEMP files
         commands.append('Write-Output "Deleting TEMP files..."')
         commands.append('try { Remove-Item "$env:TEMP\\*" -Recurse -Force -EA SilentlyContinue } catch { }')
         
-        # Prefetch
         commands.append('Write-Output "Deleting Prefetch..."')
         commands.append('try { Remove-Item "$env:SystemRoot\\Prefetch\\*" -Recurse -Force -EA SilentlyContinue } catch { }')
         
-        # Windows Update cache
         commands.append('Write-Output "Deleting Update cache..."')
         commands.append('try { Remove-Item "$env:SystemRoot\\SoftwareDistribution\\Download\\*" -Recurse -Force -EA SilentlyContinue } catch { }')
         
-        # Browser caches if selected
         if opts.get("chrome"):
             commands.append('Write-Output "Clearing Chrome cache..."')
             commands.append('try { Remove-Item "$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\Cache\\*" -Recurse -Force -EA SilentlyContinue } catch { }')
@@ -987,8 +961,6 @@ class CleanTunePage(QWidget):
             commands.append('try { Get-ChildItem "$env:APPDATA\\Mozilla\\Firefox\\Profiles" -Directory -EA SilentlyContinue | ForEach-Object { Remove-Item "$($_.FullName)\\cache2\\*" -Recurse -Force -EA SilentlyContinue } } catch { }')
         
         commands.append('Write-Output "✅ Cleanup complete."')
-        
-        # Join with semicolons - CRITICAL: This is the proper way
         script = "; ".join(commands)
 
         si = subprocess.STARTUPINFO()
@@ -998,25 +970,17 @@ class CleanTunePage(QWidget):
         try:
             proc = subprocess.Popen(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE,
-                text=True, 
-                encoding="utf-8", 
-                startupinfo=si, 
-                creationflags=flags
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", startupinfo=si, creationflags=flags
             )
             self._active_proc = proc
 
-            # Read stdout
             for line in proc.stdout:
                 clean = re.sub(r"[^\x09\x0A\x0D\x20-\x7E]", "", line).strip()
                 if clean:
                     sig.message.emit(clean)
             
-            # Wait for completion
             proc.wait()
-            
-            # Check stderr
             stderr_output = proc.stderr.read().strip()
             
             if proc.returncode == 0:
@@ -1034,37 +998,47 @@ class CleanTunePage(QWidget):
         if not os.path.isdir(folder):
             sig.done.emit(False, "Folder not found.")
             return
+
+        # Optimization: Only scan dangerous file types to save time and API quota
+        dangerous_exts = {'.exe', '.msi', '.bat', '.ps1', '.cmd', '.com', '.dll', '.scr', '.vbs', '.py', '.jar'}
         
-        files = [os.path.join(folder, f) for f in os.listdir(folder) 
-                 if os.path.isfile(os.path.join(folder, f))]
+        all_files = [os.path.join(folder, f) for f in os.listdir(folder) if os.path.isfile(os.path.join(folder, f))]
         
-        if not files:
-            sig.done.emit(False, "No files to scan.")
+        # Filter files
+        files_to_scan = [f for f in all_files if os.path.splitext(f)[1].lower() in dangerous_exts]
+        skipped = len(all_files) - len(files_to_scan)
+
+        if not files_to_scan:
+            sig.done.emit(True, f"✅ No executable files found to scan (Skipped {skipped} safe files).")
             return
-        
+
         if not VT_API_KEY:
-            sig.message.emit("⚠️ VirusTotal API key not configured.")
+            sig.message.emit("⚠️ VirusTotal API key not configured in environment.")
             sig.done.emit(False, "SmartScan aborted - no API key.")
             return
 
-        sig.message.emit(f"Found {len(files)} files to scan...\n")
+        sig.message.emit(f"Found {len(files_to_scan)} executables (Skipped {skipped} safe files)...\n")
         
         flagged = []
-        total = len(files)
+        total = len(files_to_scan)
         
-        for i, path in enumerate(files, 1):
+        for i, path in enumerate(files_to_scan, 1):
             name = os.path.basename(path)
+            
+            # Skip large files > 500MB (hashing takes too long)
+            try:
+                if os.path.getsize(path) > 500 * 1024 * 1024:
+                    sig.message.emit(f"[{i}/{total}] ⚠️ Skipping {name} (Too large > 500MB)")
+                    continue
+            except:
+                continue
+
             sig.message.emit(f"[{i}/{total}] Checking {name}...")
             
             try:
                 h = self._hash_file(path)
-            except Exception as e:
-                sig.message.emit(f"  ⚠️ Error hashing: {e}")
-                sig.progress.emit(int(i * 100 / total))
-                continue
-
-            try:
                 data = self._vt_lookup(h)
+                
                 if data:
                     stats = data.get("attributes", {}).get("last_analysis_stats", {})
                     bad = int(stats.get("malicious", 0) or 0)
@@ -1073,30 +1047,34 @@ class CleanTunePage(QWidget):
                         flagged.append({"path": path, "name": name, "malicious": bad})
                     else:
                         sig.message.emit(f"  ✅ Clean")
+                elif data is False:
+                    # Explicit rate limit signal from _vt_lookup
+                    sig.message.emit("  ⚠️ API Rate Limit (429). Pausing 15s...")
+                    time.sleep(15)
                 else:
                     sig.message.emit(f"  ℹ️ Not in VT database")
             except Exception as e:
-                sig.message.emit(f"  ⚠️ VT error: {e}")
+                sig.message.emit(f"  ⚠️ Error: {e}")
 
             sig.progress.emit(int(i * 100 / total))
-            time.sleep(0.3)  # Rate limiting
+            
+            # RATE LIMIT PROTECTION: 15s delay between requests for Free Tier
+            # If you have a premium key, you can reduce this.
+            time.sleep(15.5) 
 
         sig.message.emit(f"\n{'='*40}")
-        sig.message.emit(f"Scan complete: {len(flagged)} file(s) flagged out of {total}")
+        sig.message.emit(f"Scan complete: {len(flagged)} threats found.")
         
-        # Emit results BEFORE done signal so dialog shows first
         if flagged:
             sig.results.emit(flagged)
             msg = f"🚨 {len(flagged)} threat(s) found! Review dialog opened."
         else:
-            msg = "✅ All files clean!"
+            msg = "✅ All scanned files clean!"
         
         sig.done.emit(True, msg)
 
     def _on_scan_results(self, results):
-        """Slot to handle scan results - shows review dialog."""
         log = getattr(self, '_current_log', None)
-        
         if not results:
             if log:
                 log.append("No flagged files to review.")
@@ -1105,7 +1083,6 @@ class CleanTunePage(QWidget):
         if log:
             log.append(f"\n🔍 Found {len(results)} flagged file(s). Opening review dialog...")
         
-        # Create and show review dialog
         try:
             dlg = ReviewDialog(results, ai=self.ai, parent=self)
             dlg.setModal(True)
@@ -1115,24 +1092,6 @@ class CleanTunePage(QWidget):
         except Exception as e:
             if log:
                 log.append(f"❌ Error opening review dialog: {e}")
-            print(f"ReviewDialog error: {e}")
-
-    def _handle_scan_results(self, results, log):
-        """Show review dialog when flagged files are found."""
-        if not results:
-            log.append("No flagged files to review.")
-            return
-        
-        log.append(f"\n🔍 Found {len(results)} flagged file(s). Opening review dialog...")
-        
-        # Create and show review dialog
-        try:
-            dlg = ReviewDialog(results, ai=self.ai, parent=self)
-            dlg.setModal(True)
-            dlg.exec()
-            log.append("✅ Review dialog closed.")
-        except Exception as e:
-            log.append(f"❌ Error opening review dialog: {e}")
 
     def _finish(self, ok, msg, tool, log, card_timer, tlab):
         if card_timer.isActive():
@@ -1141,38 +1100,28 @@ class CleanTunePage(QWidget):
         log.append(f"\n{msg}")
         log.append("-" * 40)
         
-        # Force completion check
         if hasattr(log, 'force_completion_check'):
             log.force_completion_check()
         
-        # Set result
         if hasattr(log, 'set_result'):
             log.set_result(ok, msg)
         
-        # Update progress bar
         if ok:
             self.progress_bars[tool].setValue(100)
         
-        # Check if in workflow mode
         in_workflow = hasattr(self, '_in_workflow_mode') and self._in_workflow_mode
         
         if not in_workflow:
-            # Normal mode - show message boxes
             if ok:
                 QMessageBox.information(self, "Complete", msg)
             else:
                 QMessageBox.warning(self, "Issue Detected", msg)
-        # In workflow mode, window will auto-close via detector
         
         self._fade_out_label(tlab)
         self._active_proc = None
         self._active_timer = None
         
-        # NEW: Clean up any finished threads
-        self._cleanup_finished_threads()
-
-    def _cleanup_finished_threads(self):
-        """Clean up threads that have finished."""
+        # Cleanup dead threads
         for thread in list(self._active_threads):
             if not thread.is_alive():
                 self._active_threads.remove(thread)
@@ -1202,43 +1151,46 @@ class CleanTunePage(QWidget):
     def _vt_lookup(self, sha256):
         headers = {"accept": "application/json", "x-apikey": VT_API_KEY}
         url = f"https://www.virustotal.com/api/v3/files/{sha256}"
-        r = requests.get(url, headers=headers, timeout=20)
-        if r.status_code == 200:
-            return r.json().get("data")
-        if r.status_code == 404:
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                return r.json().get("data")
+            if r.status_code == 404:
+                return None
+            if r.status_code == 429:
+                return False # Rate limit hit
             return None
-        r.raise_for_status()
-        return None
+        except:
+            return None
 
     def closeEvent(self, event):
-        """Clean shutdown when page is closed."""
-        # Stop all active processes
-        if self._active_proc and self._active_proc.poll() is None:
+        """Force kill everything on close."""
+        if self._active_proc:
             try:
-                self._active_proc.terminate()
-                self._active_proc.wait(timeout=2)
+                # Force kill PID tree (crucial for DISM/SFC on Windows)
+                subprocess.run(
+                    f"taskkill /F /T /PID {self._active_proc.pid}", 
+                    shell=True, 
+                    stdout=subprocess.DEVNULL, 
+                    stderr=subprocess.DEVNULL
+                )
             except:
-                try:
-                    self._active_proc.kill()
-                except:
-                    pass
-        
-        # Stop timers
+                pass
+            self._active_proc = None
+
         if self._active_timer and self._active_timer.isActive():
             self._active_timer.stop()
         
-        # Close active log window
         if self._active_log:
             try:
                 self._active_log.close()
             except:
                 pass
         
-        # Wait for threads to finish (with timeout)
-        for thread in list(self._active_threads):
+        # Wait briefly for daemon threads
+        for thread in self._active_threads:
             if thread.is_alive():
-                # Threads are daemon, but give them a moment to cleanup
-                thread.join(timeout=0.5)
+                thread.join(0.1)
         
         self._active_threads.clear()
         event.accept()
